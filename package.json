@@ -1,11 +1,12 @@
 {
-  "name": "chat-server",
+  "name": "discord-railway-bot",
   "version": "1.0.0",
-  "main": "server.js",
-  "dependencies": {
-    "ws": "^8.18.0"
-  },
+  "main": "index.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.0.0",
+    "pg": "^8.0.0"
   }
 }
