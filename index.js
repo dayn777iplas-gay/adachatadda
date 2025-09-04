@@ -3,10 +3,19 @@ const { Client, GatewayIntentBits } = require('discord.js');
 const { Pool } = require('pg');
 const express = require('express');
 const cors = require('cors');
-const fetch = require('node-fetch');
+
+// fetch встроен в Node.js 18+
+const fetch = global.fetch;
 
 // ===== Discord и PostgreSQL =====
-const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
+  ]
+});
+
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const DATABASE_URL = process.env.DATABASE_URL;
 const ADMIN_ID = process.env.ADMIN_ID;
@@ -31,12 +40,12 @@ initDB().catch(console.error);
 
 // ===== Express сервер =====
 const app = express();
-app.use(cors()); // Разрешаем CORS для всех
-app.use(express.json()); // Для POST JSON
+app.use(cors()); 
+app.use(express.json()); 
 
 app.get('/', (req, res) => res.send('Bot is alive!'));
 
-// Роут для проверки токена через GET
+// Проверка токена
 app.get('/check/:token', async (req, res) => {
   try {
     const token = req.params.token;
@@ -48,16 +57,15 @@ app.get('/check/:token', async (req, res) => {
   }
 });
 
-// Роут для отдачи основного скрипта через POST (ключ в теле)
+// Отдача основного скрипта
 app.post('/run', async (req, res) => {
   try {
     const { token } = req.body;
     const result = await pool.query('SELECT 1 FROM my_table WHERE token=$1', [token]);
-    if(result.rowCount === 0){
+    if (result.rowCount === 0) {
       return res.status(403).send('// Ключ невалидный');
     }
 
-    // Загружаем основной скрипт с указанного URL
     const scriptUrl = 'https://bondyuk777.github.io/-/dadwadfafaf.js';
     const response = await fetch(scriptUrl);
     if (!response.ok) {
@@ -77,7 +85,7 @@ app.post('/run', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
-// ===== События бота =====
+// ===== События Discord-бота =====
 client.on('ready', () => console.log(`Logged in as ${client.user.tag}!`));
 
 client.on('messageCreate', async (message) => {
