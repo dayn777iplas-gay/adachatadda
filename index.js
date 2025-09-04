@@ -4,9 +4,24 @@ const express = require('express');
 
 // ===== Express сервер для Render =====
 const app = express();
+
 app.get('/', (req, res) => res.send('Bot is alive!'));
+
+// 🔑 Роут для проверки токена
+app.get('/check/:token', async (req, res) => {
+  try {
+    const token = req.params.token;
+    const result = await pool.query('SELECT 1 FROM my_table WHERE token = $1', [token]);
+    res.json({ valid: result.rowCount > 0 });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'DB error' });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
 
 // ===== Discord бот =====
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
