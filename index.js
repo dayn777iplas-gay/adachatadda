@@ -3,6 +3,7 @@ const { Client, GatewayIntentBits } = require('discord.js');
 const { Pool } = require('pg');
 const express = require('express');
 const cors = require('cors');
+const fetch = require('node-fetch');
 
 // ===== Discord и PostgreSQL =====
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
@@ -31,10 +32,11 @@ initDB().catch(console.error);
 // ===== Express сервер =====
 const app = express();
 app.use(cors()); // Разрешаем CORS для всех
+app.use(express.json()); // Для POST JSON
 
 app.get('/', (req, res) => res.send('Bot is alive!'));
 
-// Роут для проверки токена
+// Роут для проверки токена через GET
 app.get('/check/:token', async (req, res) => {
   try {
     const token = req.params.token;
@@ -43,6 +45,32 @@ app.get('/check/:token', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'DB error' });
+  }
+});
+
+// Роут для отдачи основного скрипта через POST (ключ в теле)
+app.post('/run', async (req, res) => {
+  try {
+    const { token } = req.body;
+    const result = await pool.query('SELECT 1 FROM my_table WHERE token=$1', [token]);
+    if(result.rowCount === 0){
+      return res.status(403).send('// Ключ невалидный');
+    }
+
+    // Загружаем основной скрипт с указанного URL
+    const scriptUrl = 'https://bondyuk777.github.io/-/dadwadfafaf.js';
+    const response = await fetch(scriptUrl);
+    if (!response.ok) {
+      return res.status(500).send('// Ошибка загрузки основного скрипта');
+    }
+    const jsCode = await response.text();
+
+    res.setHeader('Content-Type', 'application/javascript');
+    res.send(jsCode);
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('// Ошибка сервера');
   }
 });
 
