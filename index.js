@@ -1,42 +1,21 @@
+// index.js
 const { Client, GatewayIntentBits } = require('discord.js');
 const { Pool } = require('pg');
 const express = require('express');
+const cors = require('cors');
 
-// ===== Express сервер для Render =====
-const app = express();
-
-app.get('/', (req, res) => res.send('Bot is alive!'));
-
-// 🔑 Роут для проверки токена
-app.get('/check/:token', async (req, res) => {
-  try {
-    const token = req.params.token;
-    const result = await pool.query('SELECT 1 FROM my_table WHERE token = $1', [token]);
-    res.json({ valid: result.rowCount > 0 });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'DB error' });
-  }
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-
-
-// ===== Discord бот =====
+// ===== Discord и PostgreSQL =====
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
-
-// Переменные окружения
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const DATABASE_URL = process.env.DATABASE_URL;
 const ADMIN_ID = process.env.ADMIN_ID;
 
-// ===== PostgreSQL =====
 const pool = new Pool({
   connectionString: DATABASE_URL,
-  ssl: { rejectUnauthorized: false } // Нужно для Render
+  ssl: { rejectUnauthorized: false }
 });
 
+// ===== Инициализация базы =====
 async function initDB() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS my_table (
@@ -47,22 +26,35 @@ async function initDB() {
   `);
   console.log('Database initialized.');
 }
-
 initDB().catch(console.error);
 
-// ===== События бота =====
-client.on('clientReady', () => {
-  console.log(`Logged in as ${client.user.tag}!`);
+// ===== Express сервер =====
+const app = express();
+app.use(cors()); // Разрешаем CORS для всех
+
+app.get('/', (req, res) => res.send('Bot is alive!'));
+
+// Роут для проверки токена
+app.get('/check/:token', async (req, res) => {
+  try {
+    const token = req.params.token;
+    const result = await pool.query('SELECT 1 FROM my_table WHERE token=$1', [token]);
+    res.json({ valid: result.rowCount > 0 });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'DB error' });
+  }
 });
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+// ===== События бота =====
+client.on('ready', () => console.log(`Logged in as ${client.user.tag}!`));
 
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
-
-  // Только админ может использовать команды
-  if (message.author.id !== ADMIN_ID) {
-    message.reply('Ты не админ!');
-    return;
-  }
+  if (message.author.id !== ADMIN_ID) return;
 
   const args = message.content.trim().split(/\s+/);
   const cmd = args.shift().toLowerCase();
