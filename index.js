@@ -117,3 +117,8 @@ client.on('messageCreate', async (message) => {
 });
 
 client.login(BOT_TOKEN);
+// ===== Самопинг, чтобы Render не засыпал слишком надолго =====
+setInterval(() => {
+  fetch(`https://adadadadad-97sj.onrender.com/check/1`).catch(() => {});
+}, 5 * 60 * 1000); // каждые 5 минут
+
