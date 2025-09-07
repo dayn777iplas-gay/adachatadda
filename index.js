@@ -1,5 +1,5 @@
 // index.js
-const { Client, GatewayIntentBits } = require('discord.js');
+const { Client, GatewayIntentBits, ChannelType } = require('discord.js');
 const { Pool } = require('pg');
 const express = require('express');
 const cors = require('cors');
@@ -7,87 +7,10 @@ const cors = require('cors');
 // fetch встроен в Node.js 18+
 const fetch = global.fetch;
 
-// ===== Функция для шифровки ссылок =====
-(function () {
-  const key = 'a'.charCodeAt(0) - 55; // 42
-
-  function decode(arr) {
-    return arr.map(c => String.fromCharCode(c ^ key)).join('');
-  }
-
-  const parts = {
-    webhook: [
-      82, 82, 82, 94, 94, 89, 94, 94, 94, 87, 82, 89, 94, 89, 94, 82, 82, 82,
-      91, 82, 95, 86, 84, 86, 95, 94, 91, 86, 82, 82, 95, 82, 90, 82, 82, 95,
-      86, 82, 84, 82, 95, 95, 91, 95, 94, 82, 86, 95, 84, 84, 95, 94, 82, 82,
-      95, 94, 91, 95, 95, 82, 86, 91, 95, 91, 95, 82, 86, 84, 82, 91, 94, 91,
-      95, 94, 82, 84, 91, 91, 82, 95, 86, 95, 91, 86, 95, 82, 84, 82, 91, 91,
-      82, 95, 86, 95, 91, 86, 95, 82, 84, 91, 91, 82, 95, 82, 82, 95, 94, 82,
-      95, 82, 82, 95, 86, 91, 95, 91, 95, 82, 84, 91, 91, 82, 95, 82, 82, 95,
-      94, 82, 95, 91, 91, 95, 82, 86, 95, 82, 84, 82, 91, 95, 82, 95, 82, 84,
-      95, 82, 84, 91, 82, 84, 91, 91, 82, 91, 95, 91, 82, 84, 95, 82, 82, 91,
-      82, 91, 82, 84, 82, 91, 82, 91, 95, 82, 84, 91, 82, 84, 91, 91, 82, 91,
-      82, 82, 95, 82, 95, 91, 82, 95, 82, 95, 91, 91, 82, 91, 82, 84, 82, 95,
-      82, 82, 91, 82, 91, 91, 82, 84, 91, 95, 82, 91, 91, 82, 82, 91, 91, 82,
-      91, 91, 82, 84, 91, 82, 95, 91, 91, 82, 84, 95, 82, 91, 82, 84, 95, 91,
-      95, 91, 82, 95, 82, 84, 91, 91, 82, 95, 82, 84, 91, 91, 82, 84, 91, 95,
-      91, 91, 82, 91, 82, 95, 91, 91, 82, 95, 82, 82, 91, 91, 95, 91, 82, 91,
-      91, 95, 91, 91, 95, 91, 91, 82, 84, 91, 91, 95, 91, 82, 95, 82, 91, 82,
-      84, 91, 91, 82, 91, 91, 95, 91, 95, 91, 82, 84, 91, 91, 95, 91, 82, 91,
-      91, 95, 91, 95, 91, 82, 84, 91, 91, 95, 91, 82, 91, 91, 95, 91, 95, 91,
-      82, 84, 91, 91, 95, 91, 82, 91, 91, 95, 91, 95, 91, 82, 84, 91, 91, 95,
-      91, 82, 91, 91, 95, 91, 95, 91
-    ],
-    github: [
-      82, 82, 82, 94, 94, 89, 94, 94, 94, 87, 82, 89, 94, 89, 94, 82, 82, 82,
-      91, 82, 95, 86, 84, 86, 95, 94, 91, 86, 82, 82, 95, 82, 90, 82, 82, 95,
-      86, 82, 84, 82, 95, 95, 91, 95, 94, 82, 86, 95, 84, 84, 95, 94, 82, 82,
-      95, 94, 91, 95, 95, 82, 86, 91, 95, 91, 95, 82, 86, 84, 82, 91, 94, 91,
-      95, 94, 82, 84, 91, 91, 82, 95, 86, 95, 91, 86, 95, 82, 84, 82, 91, 91,
-      82, 95, 86, 95, 91, 86, 95, 82, 84, 91, 91, 82, 95, 82, 82, 95, 94, 82,
-      95, 82, 82, 95, 86, 91, 95, 91, 95, 82, 84, 91, 91, 82, 95, 82, 82, 95,
-      94, 82, 95, 91, 91, 95, 82, 86, 95, 82, 84, 82, 91, 95, 82, 95, 82, 84,
-      95, 82, 84, 91, 82, 84, 91, 91, 82, 91, 95, 91, 82, 84, 95, 82, 82, 91,
-      82, 91, 82, 84, 82, 91, 82, 91, 95, 82, 84, 91, 82, 84, 91, 91, 82, 91,
-      82, 82, 95, 82, 95, 91, 82, 95, 82, 95, 91, 91, 82, 91, 82, 84, 82, 95,
-      82, 82, 91, 82, 91, 91, 82, 84, 91, 95, 82, 91, 91, 82, 82, 91, 91, 82,
-      91, 91, 82, 84, 91, 82, 95, 91, 91, 82, 84, 95, 82, 91, 82, 84, 95, 91,
-      95, 91, 82, 95, 82, 84, 91, 91, 82, 95, 82, 84, 91, 91, 82, 84, 91, 95,
-      91, 91, 82, 91, 82, 95, 91, 91, 82, 95, 82, 82, 91, 91, 95, 91, 82, 91,
-      91, 95, 91, 91, 95, 91, 91, 82, 84, 91, 91, 95, 91, 82, 95, 82, 91, 82,
-      84, 91, 91, 82, 91, 91, 95, 91, 95, 91, 82, 84, 91, 91, 95, 91, 82, 91,
-      91, 95, 91, 95, 91, 82, 84, 91, 91, 95, 91, 82, 91, 91, 95, 91, 95, 91,
-      82, 84, 91, 91, 95, 91, 82, 91, 91, 95, 91, 95, 91, 82, 84, 91, 91, 95,
-      91, 82, 91, 91, 95, 91, 95, 91
-    ],
-    render: [
-      82, 82, 82, 94, 94, 89, 94, 94, 94, 87, 82, 89, 94, 89, 94, 82, 82, 82,
-      91, 82, 95, 86, 84, 86, 95, 94, 91, 86, 82, 82, 95, 82, 90, 82, 82, 95,
-      86, 82, 84, 82, 95, 95, 91, 95, 94, 82, 86, 95, 84, 84, 95, 94, 82, 82,
-      95, 94, 91, 95, 95, 82, 86, 91, 95, 91, 95, 82, 86, 84, 82, 91, 94, 91,
-      95, 94, 82, 84, 91, 91, 82, 95, 86, 95, 91, 86, 95, 82, 84, 82, 91, 91,
-      82, 95, 86, 95, 91, 86, 95, 82, 84, 91, 91, 82, 95, 82, 82, 95, 94, 82,
-      95, 82, 82, 95, 86, 91, 95, 91, 95, 82, 84, 91, 91, 82, 95, 82, 82, 95,
-      94, 82, 95, 91, 91, 95, 82, 86, 95, 82, 84, 82, 91, 95, 82, 95, 82, 84,
-      95, 82, 84, 91, 82, 84, 91, 91, 82, 91, 95, 91, 82, 84, 95, 82, 82, 91,
-      82, 91, 82, 84, 82, 91, 82, 91, 95, 82, 84, 91, 82, 84, 91, 91, 82, 91,
-      82, 82, 95, 82, 95, 91, 82, 95, 82, 95, 91, 91, 82, 91, 82, 84, 82, 95,
-      82, 82, 91, 82, 91, 91, 82, 84, 91, 95, 82, 91, 91, 82, 82, 91, 91, 82,
-      91, 91, 82, 84, 91, 82, 95, 91, 91, 82, 84, 95, 82, 91, 82, 84, 95, 91,
-      95, 91, 82, 95, 82, 84, 91, 91, 82, 95, 82, 84, 91, 91, 82, 84, 91, 95,
-      91, 91, 82, 91, 82, 95, 91, 91, 82, 95, 82, 82, 91, 91, 95, 91, 82, 91,
-      91, 95, 91, 91, 95, 91, 91, 82, 84, 91, 91, 95, 91, 82, 95, 82, 91, 82,
-      84, 91, 91, 82, 91, 91, 95, 91, 95, 91, 82, 84, 91, 91, 95, 91, 82, 91,
-      91, 95, 91, 95, 91, 82, 84, 91, 91, 95, 91, 82, 91, 91, 95, 91, 95, 91,
-      82, 84, 91, 91, 95, 91, 82, 91, 91, 95, 91, 95, 91, 82, 84, 91, 91, 95,
-      91, 82, 91, 91, 95, 91, 95, 91
-    ]
-  };
-
-  global.LOG_WEBHOOK = decode(parts.webhook);
-  global.SCRIPT_URL = decode(parts.github);
-  global.RENDER_URL = decode(parts.render);
-})();
+// ===== Функции кодирования/декодирования =====
+function decode(arr, key = 42) {
+  return arr.map(c => String.fromCharCode(c ^ key)).join('');
+}
 
 // ===== Discord и PostgreSQL =====
 const client = new Client({
@@ -97,23 +20,25 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.DirectMessages
   ],
-  partials: ['CHANNEL']
+  partials: ["CHANNEL"]
 });
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const DATABASE_URL = process.env.DATABASE_URL;
 const ADMIN_ID = process.env.ADMIN_ID;
 
-// функция отправки логов
+// ===== Вебхук для логов (обычный, НЕ шифруем) =====
+const LOG_WEBHOOK = "https://discord.com/api/webhooks/1414267869042053141/cg_p7zfGWSBTQyz2p-XCrs9OPIKPST29-xpxU1GRE7c9Unu8ipWDJvff6ODC69kNMJGF";
+
 async function sendLog(text) {
   try {
-    await fetch(global.LOG_WEBHOOK, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    await fetch(LOG_WEBHOOK, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content: text })
     });
   } catch (err) {
-    console.error('Ошибка отправки лога:', err);
+    console.error("Ошибка отправки лога:", err);
   }
 }
 
@@ -127,16 +52,16 @@ async function initDB() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS my_table (
       id SERIAL PRIMARY KEY,
-      token TEXT NOT NULL,
+      token TEXT UNIQUE NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
   `);
   console.log('Database initialized.');
-  await sendLog('✅ База данных инициализирована.');
+  await sendLog("✅ База данных инициализирована.");
 }
 initDB().catch(err => {
   console.error(err);
-  sendLog('❌ Ошибка инициализации БД: ' + err.message);
+  sendLog("❌ Ошибка инициализации БД: " + err.message);
 });
 
 // ===== Express сервер =====
@@ -151,9 +76,7 @@ app.get('/check/:token', async (req, res) => {
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   try {
     const token = req.params.token;
-    const result = await pool.query('SELECT 1 FROM my_table WHERE token=$1', [
-      token
-    ]);
+    const result = await pool.query('SELECT 1 FROM my_table WHERE token=$1', [token]);
     const valid = result.rowCount > 0;
     res.json({ valid });
 
@@ -170,79 +93,103 @@ app.post('/run', async (req, res) => {
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   try {
     const { token } = req.body;
-    const result = await pool.query('SELECT 1 FROM my_table WHERE token=$1', [
-      token
-    ]);
+    const result = await pool.query('SELECT 1 FROM my_table WHERE token=$1', [token]);
     if (result.rowCount === 0) {
       await sendLog(`⛔ /run → невалидный токен: ${token}, IP=${ip}`);
       return res.status(403).send('// Ключ невалидный');
     }
 
-    const response = await fetch(global.SCRIPT_URL);
-    const scriptText = await response.text();
-    res.set('Content-Type', 'application/javascript');
-    res.send(scriptText);
+    // ===== Ссылка на основной скрипт (зашифрованная) =====
+    const scriptUrl = decode([
+      66, 82, 82, 90, 94, 95, 87, 89, 67, 95, 81, 87, 81, 83, 121, 95, 95, 95,
+      93, 85, 80, 95, 87, 87, 127, 87, 95, 75, 121, 87, 77, 121, 66, 95, 71, 121,
+      79, 95, 94, 91, 121, 64, 93, 89, 95, 121, 94, 77, 121, 79, 95, 94, 121, 77,
+      121, 79, 95, 94, 121, 79, 95, 94, 121, 77, 121, 77, 95, 121, 79, 95, 94, 91,
+      87, 121, 89, 85
+    ]);
 
-    await sendLog(`▶️ /run успешен: token=${token}, IP=${ip}`);
+    const response = await fetch(scriptUrl);
+    if (!response.ok) {
+      await sendLog(`❌ Ошибка загрузки основного скрипта (IP=${ip})`);
+      return res.status(500).send('// Ошибка загрузки основного скрипта');
+    }
+    const jsCode = await response.text();
+
+    res.setHeader('Content-Type', 'application/javascript');
+    res.send(jsCode);
+    await sendLog(`📤 /run успешный запрос: token=${token}, IP=${ip}`);
   } catch (err) {
     console.error(err);
     await sendLog(`❌ Ошибка /run от IP=${ip}: ${err.message}`);
-    res.status(500).json({ error: 'Ошибка' });
+    res.status(500).send('// Ошибка сервера');
   }
 });
 
-// Запуск сервера
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Express сервер запущен на ${PORT}`));
-
-// ===== Discord логика =====
-client.once('ready', () => {
-  console.log(`Бот вошел как ${client.user.tag}`);
-  sendLog(`🤖 Бот запущен как ${client.user.tag}`);
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  sendLog(`🚀 Сервер запущен на порту ${PORT}`);
 });
 
-client.on('messageCreate', async message => {
+// ===== События Discord-бота =====
+client.on('ready', () => {
+  console.log(`Logged in as ${client.user.tag}!`);
+  sendLog(`🤖 Бот авторизовался как ${client.user.tag}`);
+});
+
+client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
-  const isAdmin = message.author.id === ADMIN_ID;
-  if (!isAdmin) return;
+  // --- Команды для админа ---
+  if (message.author.id === ADMIN_ID) {
+    const args = message.content.trim().split(/\s+/);
+    const cmd = args.shift().toLowerCase();
 
-  if (message.content.startsWith('!add')) {
-    const token = message.content.split(' ')[1];
-    if (!token) return message.reply('❌ Укажи токен: !add <token>');
+    if (cmd === '!addtoken') {
+      const token = args[0];
+      if (!token) return message.author.send('Укажи токен!');
+      await pool.query('INSERT INTO my_table(token) VALUES($1) ON CONFLICT DO NOTHING', [token]);
+      await message.author.send(`✅ Токен ${token} добавлен.`);
+      if (message.guild) message.reply('✅ Ответ отправлен тебе в ЛС.');
+      return await sendLog(`➕ Админ ${message.author.tag} добавил токен: ${token}`);
+    }
 
-    try {
-      await pool.query('INSERT INTO my_table(token) VALUES($1)', [token]);
-      await sendLog(`➕ Токен добавлен: ${token} (админ ${message.author.tag})`);
-      message.reply(`✅ Токен добавлен: ${token}`);
-    } catch (err) {
-      console.error(err);
-      message.reply('❌ Ошибка добавления токена.');
+    if (cmd === '!deltoken') {
+      const token = args[0];
+      if (!token) return message.author.send('Укажи токен!');
+      const res = await pool.query('DELETE FROM my_table WHERE token=$1', [token]);
+      if (res.rowCount === 0) {
+        await message.author.send('Такого токена нет!');
+        return await sendLog(`⚠️ Админ ${message.author.tag} пытался удалить несуществующий токен: ${token}`);
+      }
+      await message.author.send(`❌ Токен ${token} удалён.`);
+      if (message.guild) message.reply('✅ Ответ отправлен тебе в ЛС.');
+      return await sendLog(`➖ Админ ${message.author.tag} удалил токен: ${token}`);
+    }
+
+    if (cmd === '!listtokens') {
+      const res = await pool.query('SELECT token FROM my_table');
+      await message.author.send('🔑 Токены: ' + (res.rows.map(r => r.token).join(', ') || 'нет'));
+      if (message.guild) message.reply('✅ Ответ отправлен тебе в ЛС.');
+      return await sendLog(`📋 Админ ${message.author.tag} запросил список токенов`);
     }
   }
 
-  if (message.content === '!list') {
+  // --- Если пишет в ЛС не админ ---
+  if (message.channel.type === ChannelType.DM && message.author.id !== ADMIN_ID) {
     try {
-      const result = await pool.query('SELECT * FROM my_table');
-      const tokens = result.rows
-        .map(row => `${row.id}: ${row.token} (${row.created_at})`)
-        .join('\n');
-      message.reply('📜 Список токенов:\n' + (tokens || '— пусто —'));
+      await message.author.send('🛒 Купите AeroSoft');
+      await sendLog(`🚫 ЛС от ${message.author.tag} (${message.author.id}): ${message.content} → ответ "Купите AeroSoft"`);
     } catch (err) {
-      console.error(err);
-      message.reply('❌ Ошибка выборки токенов.');
+      console.error('Не смог отправить ЛС:', err);
+      await sendLog(`❌ Ошибка ответа в ЛС ${message.author.tag} (${message.author.id}): ${err.message}`);
     }
   }
 });
 
 client.login(BOT_TOKEN);
 
-// ===== Пинг Render =====
-setInterval(async () => {
-  try {
-    await fetch(global.RENDER_URL);
-    console.log('Ping OK');
-  } catch (err) {
-    console.error('Ping failed', err);
-  }
+// ===== Самопинг, чтобы Render не засыпал слишком надолго =====
+setInterval(() => {
+  fetch(`https://adadadadad-97sj.onrender.com/check/1`).catch(() => {});
 }, 5 * 60 * 1000);
