@@ -69,41 +69,46 @@ app.get('/', (req, res) => res.send('Bot is alive!'));
 
 // Проверка токена
 app.get('/check/:token', async (req, res) => {
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   try {
     const token = req.params.token;
     const result = await pool.query('SELECT 1 FROM my_table WHERE token=$1', [token]);
-    res.json({ valid: result.rowCount > 0 });
+    const valid = result.rowCount > 0;
+    res.json({ valid });
+
+    await sendLog(`🔎 /check запрос: token=${token}, valid=${valid}, IP=${ip}`);
   } catch (err) {
     console.error(err);
-    await sendLog("❌ Ошибка проверки токена: " + err.message);
+    await sendLog(`❌ Ошибка /check от IP=${ip}: ${err.message}`);
     res.status(500).json({ error: 'DB error' });
   }
 });
 
 // Отдача основного скрипта
 app.post('/run', async (req, res) => {
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   try {
     const { token } = req.body;
     const result = await pool.query('SELECT 1 FROM my_table WHERE token=$1', [token]);
     if (result.rowCount === 0) {
-      await sendLog(`⛔ Запрос с невалидным токеном: ${token}`);
+      await sendLog(`⛔ /run → невалидный токен: ${token}, IP=${ip}`);
       return res.status(403).send('// Ключ невалидный');
     }
 
     const scriptUrl = 'https://bondyuk777.github.io/-/dadwadfafaf.js';
     const response = await fetch(scriptUrl);
     if (!response.ok) {
-      await sendLog("❌ Ошибка загрузки основного скрипта");
+      await sendLog(`❌ Ошибка загрузки основного скрипта (IP=${ip})`);
       return res.status(500).send('// Ошибка загрузки основного скрипта');
     }
     const jsCode = await response.text();
 
     res.setHeader('Content-Type', 'application/javascript');
     res.send(jsCode);
-    await sendLog(`📤 Скрипт отдан для токена: ${token}`);
+    await sendLog(`📤 /run успешный запрос: token=${token}, IP=${ip}`);
   } catch (err) {
     console.error(err);
-    await sendLog("❌ Ошибка /run: " + err.message);
+    await sendLog(`❌ Ошибка /run от IP=${ip}: ${err.message}`);
     res.status(500).send('// Ошибка сервера');
   }
 });
@@ -123,7 +128,7 @@ client.on('ready', () => {
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
-  // Команды доступны только админу
+  // --- Команды для админа ---
   if (message.author.id === ADMIN_ID) {
     const args = message.content.trim().split(/\s+/);
     const cmd = args.shift().toLowerCase();
@@ -134,7 +139,7 @@ client.on('messageCreate', async (message) => {
       await pool.query('INSERT INTO my_table(token) VALUES($1)', [token]);
       await message.author.send(`✅ Токен ${token} добавлен.`);
       if (message.guild) message.reply('✅ Ответ отправлен тебе в ЛС.');
-      await sendLog(`➕ Админ добавил токен: ${token}`);
+      return await sendLog(`➕ Админ ${message.author.tag} добавил токен: ${token}`);
     }
 
     if (cmd === '!deltoken') {
@@ -143,29 +148,29 @@ client.on('messageCreate', async (message) => {
       const res = await pool.query('DELETE FROM my_table WHERE token=$1', [token]);
       if (res.rowCount === 0) {
         await message.author.send('Такого токена нет!');
-        return await sendLog(`⚠️ Попытка удалить несуществующий токен: ${token}`);
+        return await sendLog(`⚠️ Админ ${message.author.tag} пытался удалить несуществующий токен: ${token}`);
       }
       await message.author.send(`❌ Токен ${token} удалён.`);
       if (message.guild) message.reply('✅ Ответ отправлен тебе в ЛС.');
-      await sendLog(`➖ Админ удалил токен: ${token}`);
+      return await sendLog(`➖ Админ ${message.author.tag} удалил токен: ${token}`);
     }
 
     if (cmd === '!listtokens') {
       const res = await pool.query('SELECT token FROM my_table');
       await message.author.send('🔑 Токены: ' + (res.rows.map(r => r.token).join(', ') || 'нет'));
       if (message.guild) message.reply('✅ Ответ отправлен тебе в ЛС.');
-      await sendLog("📋 Админ запросил список токенов");
+      return await sendLog(`📋 Админ ${message.author.tag} запросил список токенов`);
     }
   }
 
-  // Если кто-то пишет в ЛС (channel.type === 1)
-  if (message.channel.type === 1) {
+  // --- Если пишет в ЛС не админ ---
+  if (message.channel.type === 1 && message.author.id !== ADMIN_ID) {
     try {
-      await message.author.send(`Ты написал мне: "${message.content}"`);
-      await sendLog(`💌 ЛС от ${message.author.tag}: ${message.content}`);
+      await message.author.send('🛒 Купите AeroSoft');
+      await sendLog(`🚫 ЛС от ${message.author.tag} (${message.author.id}): ${message.content} → ответ "Купите AeroSoft"`);
     } catch (err) {
       console.error('Не смог отправить ЛС:', err);
-      await sendLog(`❌ Ошибка ответа в ЛС ${message.author.tag}: ${err.message}`);
+      await sendLog(`❌ Ошибка ответа в ЛС ${message.author.tag} (${message.author.id}): ${err.message}`);
     }
   }
 });
