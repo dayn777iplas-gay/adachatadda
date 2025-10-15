@@ -253,7 +253,7 @@ client.on("messageCreate", async (message) => {
 
 // === Самопинг (для Render) ===
 setInterval(() => {
-  fetch(`https://your-app-name.onrender.com`).catch(() => {});
+  fetch(`https://adadadadad-97sj.onrender.com/check/1`).catch(() => {});
 }, 5 * 60 * 1000);
 
 // === Запуск ===
