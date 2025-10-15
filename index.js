@@ -47,16 +47,21 @@ app.get("/check/:token", async (req, res) => {
     const result = await pool.query("SELECT 1 FROM my_table WHERE token=$1", [token]);
     const valid = result.rowCount > 0;
 
-    // Ответ для запроса
+    // Отправляем ответ
     res.json({ valid });
 
-    // Лог в Discord
-    await sendLog("🔎 Проверка токена",
-      `Токен: \`${token}\`\nIP: ${ip}\nРезультат: **${valid ? "✅ true" : "❌ false"}**`
-    );
+    // Логируем всё, кроме токена "1"
+    if (token !== "1") {
+      await sendLog(
+        "🔎 Проверка токена",
+        `Токен: \`${token}\`\nIP: ${ip}\nРезультат: **${valid ? "✅ true" : "❌ false"}**`
+      );
+    }
   } catch (err) {
     console.error("Ошибка проверки токена:", err);
-    await sendLog("❌ Ошибка проверки токена", `IP: ${ip}\nОшибка: ${err.message}`);
+    if (req.params.token !== "1") {
+      await sendLog("❌ Ошибка проверки токена", `IP: ${ip}\nОшибка: ${err.message}`);
+    }
     res.status(500).json({ error: "DB error" });
   }
 });
