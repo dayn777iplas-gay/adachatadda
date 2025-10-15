@@ -8,20 +8,22 @@ import { Pool } from "pg";
 import express from "express";
 import cors from "cors";
 
-const fetch = global.fetch;
-
 // === Конфигурация ===
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const DATABASE_URL = process.env.DATABASE_URL;
 const ADMIN_ID = process.env.ADMIN_ID;
-const BASE_URL = process.env.BASE_URL || "https://your-app-name.onrender.com";
 
-if (!BOT_TOKEN || !DATABASE_URL || !ADMIN_ID) {
-  console.error("❌ BOT_TOKEN, DATABASE_URL и ADMIN_ID должны быть заданы в .env");
+// 👇 вставь сюда свой реальный вебхук
+const LOG_WEBHOOK_URL = "https://discord.com/api/webhooks/1427826300495855697/MtqkHw-X8jm7l8kbIxeVJHvBNcIPufZtxssqd2-wyljCggs9lGi4SMZZivbSckSw7xTU";
+
+if (!BOT_TOKEN || !DATABASE_URL || !ADMIN_ID || !LOG_WEBHOOK_URL) {
+  console.error("❌ BOT_TOKEN, DATABASE_URL, ADMIN_ID и LOG_WEBHOOK_URL должны быть заданы!");
   process.exit(1);
 }
 
-// === Клиент Discord ===
+const fetch = global.fetch;
+
+// === Discord клиент ===
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -32,7 +34,7 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
-// === Express сервер (чтобы Render не засыпал) ===
+// === Express для Render ===
 const app = express();
 app.use(cors());
 app.get("/", (req, res) => res.send("Bot is running..."));
@@ -44,7 +46,26 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
-// === Инициализация БД ===
+// === Логгер через Discord webhook ===
+async function sendLog(title, description, color = "#2f3136") {
+  try {
+    const embed = {
+      title,
+      description,
+      color: parseInt(color.replace("#", ""), 16),
+      timestamp: new Date().toISOString()
+    };
+    await fetch(LOG_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ embeds: [embed] })
+    });
+  } catch (err) {
+    console.error("Ошибка логгера:", err);
+  }
+}
+
+// === Инициализация базы ===
 async function initDB() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS my_table (
@@ -55,7 +76,6 @@ async function initDB() {
     );
   `);
 
-  // Добавляем колонки, если отсутствуют
   await pool.query(`
     DO $$
     BEGIN
@@ -77,20 +97,24 @@ async function initDB() {
 // === Удаление просроченных токенов ===
 async function removeExpiredTokens() {
   const now = new Date();
-  await pool.query("DELETE FROM my_table WHERE expires_at <= $1", [now]);
+  const res = await pool.query("DELETE FROM my_table WHERE expires_at <= $1 RETURNING token", [now]);
+  for (const row of res.rows) {
+    await sendLog("🕒 Токен автоматически удалён", `Токен: \`${row.token}\` (истёк)`, "#808080");
+  }
 }
 
-// === Автоматическое удаление по времени ===
+// === Планировщик ===
 function scheduleTokenDeletion(token, expiresAt) {
   const delay = expiresAt.getTime() - Date.now();
   if (delay <= 0) return;
   setTimeout(async () => {
     await pool.query("DELETE FROM my_table WHERE token=$1", [token]);
     console.log(`🕒 Token ${token} expired and deleted.`);
+    await sendLog("🕒 Токен удалён по времени", `Токен: \`${token}\``, "#808080");
   }, delay);
 }
 
-// === Парсинг даты ===
+// === Парсер даты ===
 function parseRuDateTime(input) {
   const match = input.match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2})$/);
   if (!match) return null;
@@ -99,16 +123,13 @@ function parseRuDateTime(input) {
   return isNaN(date) ? null : date;
 }
 
-// === Обработка текстовых команд ===
+// === Обработка команд ===
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
-  if (message.author.id !== ADMIN_ID) return; // Только админ
-  if (!message.content.startsWith("addtoken") &&
-      !message.content.startsWith("deltoken") &&
-      !message.content.startsWith("listtokens")) return;
+  if (message.author.id !== ADMIN_ID) return;
 
   const args = message.content.trim().split(/\s+/);
-  const cmd = args.shift().toLowerCase();
+  const cmd = args.shift()?.toLowerCase();
 
   try {
     // === addtoken ===
@@ -132,6 +153,7 @@ client.on("messageCreate", async (message) => {
         .setTimestamp();
 
       await message.reply({ embeds: [embed] });
+      await sendLog("✅ Добавлен токен", `\`${token}\`\nИстекает: ${expiresInput}\nДобавил: <@${message.author.id}>`);
     }
 
     // === deltoken ===
@@ -147,6 +169,8 @@ client.on("messageCreate", async (message) => {
         .setTimestamp();
 
       await message.reply({ embeds: [embed] });
+      await sendLog(res.rowCount ? "🗑️ Токен удалён" : "⚠️ Попытка удалить несуществующий токен",
+        `Токен: \`${token}\`\nУдалил: <@${message.author.id}>`);
     }
 
     // === listtokens ===
@@ -164,6 +188,7 @@ client.on("messageCreate", async (message) => {
         .setTimestamp();
 
       await message.reply({ embeds: [embed] });
+      await sendLog("📋 Просмотр токенов", `Админ: <@${message.author.id}> запросил список токенов.`);
     }
   } catch (err) {
     console.error("Ошибка команды:", err);
@@ -174,20 +199,18 @@ client.on("messageCreate", async (message) => {
 // === При запуске ===
 client.once("ready", async () => {
   console.log(`🤖 Logged in as ${client.user.tag}`);
+  await sendLog("✅ Бот запущен", `Дата: ${new Date().toLocaleString("ru-RU")}`);
 
-  // Восстанавливаем активные токены
   const res = await pool.query("SELECT token, expires_at FROM my_table");
   for (const row of res.rows) {
     if (row.expires_at) scheduleTokenDeletion(row.token, new Date(row.expires_at));
   }
 });
 
-// === Самопинг Render ===
+// === Самопинг (для Render) ===
 setInterval(() => {
-  fetch("https://adadadadad-97sj.onrender.com/check/1").catch(() => {});
+  fetch(`https://adadadadad-97sj.onrender.com/check/1`).catch(() => {});
 }, 5 * 60 * 1000);
-
 // === Запуск ===
 await initDB();
 client.login(BOT_TOKEN);
-
