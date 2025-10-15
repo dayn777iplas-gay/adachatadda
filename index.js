@@ -184,7 +184,7 @@ client.once("ready", async () => {
 
 // === Самопинг Render ===
 setInterval(() => {
-  fetch(https://adadadadad-97sj.onrender.com/check/1).catch(() => {});
+  fetch("https://adadadadad-97sj.onrender.com/check/1").catch(() => {});
 }, 5 * 60 * 1000);
 
 // === Запуск ===
