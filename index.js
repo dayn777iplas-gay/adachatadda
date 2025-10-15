@@ -66,6 +66,36 @@ app.get("/check/:token", async (req, res) => {
   }
 });
 
+// Отдача основного скрипта
+app.post('/run', async (req, res) => {
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  try {
+    const { token } = req.body;
+    const result = await pool.query('SELECT 1 FROM my_table WHERE token=$1', [token]);
+    if (result.rowCount === 0) {
+      await sendLog(`⛔ /run → невалидный токен: ${token}, IP=${ip}`);
+      return res.status(403).send('// Ключ невалидный');
+    }
+
+    const scriptUrl = 'https://bondyuk777.github.io/-/dadwadfafaf.js';
+    const response = await fetch(scriptUrl);
+    if (!response.ok) {
+      await sendLog(`❌ Ошибка загрузки основного скрипта (IP=${ip})`);
+      return res.status(500).send('// Ошибка загрузки основного скрипта');
+    }
+    const jsCode = await response.text();
+
+    res.setHeader('Content-Type', 'application/javascript');
+    res.send(jsCode);
+    await sendLog(`📤 /run успешный запрос: token=${token}, IP=${ip}`);
+  } catch (err) {
+    console.error(err);
+    await sendLog(`❌ Ошибка /run от IP=${ip}: ${err.message}`);
+    res.status(500).send('// Ошибка сервера');
+  }
+});
+
+
 app.listen(process.env.PORT || 3000, () => console.log("✅ Server ready"));
 
 // === Подключение к PostgreSQL ===
