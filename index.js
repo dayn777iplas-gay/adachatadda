@@ -38,6 +38,29 @@ const client = new Client({
 const app = express();
 app.use(cors());
 app.get("/", (req, res) => res.send("Bot is running..."));
+// === Проверка токена (возвращает true/false) ===
+app.get("/check/:token", async (req, res) => {
+  const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+
+  try {
+    const token = req.params.token;
+    const result = await pool.query("SELECT 1 FROM my_table WHERE token=$1", [token]);
+    const valid = result.rowCount > 0;
+
+    // Ответ для запроса
+    res.json({ valid });
+
+    // Лог в Discord
+    await sendLog("🔎 Проверка токена",
+      `Токен: \`${token}\`\nIP: ${ip}\nРезультат: **${valid ? "✅ true" : "❌ false"}**`
+    );
+  } catch (err) {
+    console.error("Ошибка проверки токена:", err);
+    await sendLog("❌ Ошибка проверки токена", `IP: ${ip}\nОшибка: ${err.message}`);
+    res.status(500).json({ error: "DB error" });
+  }
+});
+
 app.listen(process.env.PORT || 3000, () => console.log("✅ Server ready"));
 
 // === Подключение к PostgreSQL ===
