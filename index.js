@@ -37,6 +37,7 @@ const client = new Client({
 // === Express для Render ===
 const app = express();
 app.use(cors());
+app.use(express.json());
 app.get("/", (req, res) => res.send("Bot is running..."));
 // === Проверка токена (возвращает true/false) ===
 app.get("/check/:token", async (req, res) => {
