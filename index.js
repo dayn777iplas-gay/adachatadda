@@ -194,8 +194,11 @@ function parseRuDateTime(input) {
   const match = input.match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2})$/);
   if (!match) return null;
   const [_, d, m, y, h, min] = match;
+
+  // Создаём дату с учётом твоего локального часового пояса (Киев/Москва)
   const date = new Date(`${y}-${m}-${d}T${h}:${min}:00`);
-  return isNaN(date) ? null : date;
+  const localOffset = new Date().getTimezoneOffset() * 60000; // смещение в мс
+  return new Date(date.getTime() - localOffset);
 }
 
 // === Обработка команд ===
