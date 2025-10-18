@@ -253,106 +253,105 @@ if (cmd === "!выдать") {
   }
 });
 
-// === !промо ===
-if (cmd === "!промо") {
-  const userId = message.author.id;
+    // === !промо ===
+    if (cmd === "!промо") {
+      const userId = message.author.id;
 
-  // Проверяем, когда пользователь последний раз крутил колесо
-  const lastSpin = await pool.query(
-    `SELECT created_at FROM promos WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`,
-    [userId]
-  );
+      // Проверяем, когда пользователь последний раз крутил колесо
+      const lastSpin = await pool.query(
+        `SELECT created_at FROM promos WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`,
+        [userId]
+      );
 
-  if (lastSpin.rowCount > 0) {
-    const lastTime = new Date(lastSpin.rows[0].created_at);
-    const diffMs = Date.now() - lastTime.getTime();
-    const diffHours = diffMs / (1000 * 60 * 60);
+      if (lastSpin.rowCount > 0) {
+        const lastTime = new Date(lastSpin.rows[0].created_at);
+        const diffMs = Date.now() - lastTime.getTime();
+        const diffHours = diffMs / (1000 * 60 * 60);
 
-    if (diffHours < 24) {
-      const remaining = (24 - diffHours).toFixed(1);
-      await message.reply(`⏰ Ты уже крутил колесо недавно! Попробуй снова через **${remaining} ч.**`);
-      return;
+        if (diffHours < 24) {
+          const remaining = (24 - diffHours).toFixed(1);
+          await message.reply(`⏰ Ты уже крутил колесо недавно! Попробуй снова через **${remaining} ч.**`);
+          return;
+        }
+      }
+
+      const wait = (ms) => new Promise((res) => setTimeout(res, ms));
+
+      // Начальная анимация колеса
+      let sectors = ["💥", "🎲", "🎁", "❌", "💰", "❤️"];
+      let spinningMsg = await message.reply("🎡 [💥 | 🎲 | 🎁 | ❌ | 💰 | ❤️]\nКрутится колесо удачи...");
+
+      // Эффект вращения
+      for (let i = 0; i < 12; i++) {
+        sectors.unshift(sectors.pop());
+        await wait(200);
+        await spinningMsg.edit(`🎡 [${sectors.join(" | ")}]\nКрутится колесо удачи...`);
+      }
+
+      // 🎲 Случайный шанс выигрыша
+      const chance = Math.random();
+      const winChance = 0.1;
+      const nearDiff = Math.abs((chance - winChance) * 100).toFixed(1);
+
+      await wait(500);
+
+      if (chance > winChance) {
+        await spinningMsg.edit({
+          content: `🎡 [${sectors.join(" | ")}]`,
+          embeds: [
+            new EmbedBuilder()
+              .setTitle("😢 Почти!")
+              .setDescription(`Колесо остановилось рядом с выигрышем...\nТебе не хватило всего **${nearDiff}%** до победы!\n\nПопробуй снова через 24 часа 🎡`)
+              .setColor("#ff5555")
+          ]
+        });
+        return;
+      }
+
+      // 🎉 Победа
+      const discount = Math.floor(Math.random() * (60 - 5 + 1)) + 5;
+      await pool.query("INSERT INTO promos (user_id, discount) VALUES ($1, $2)", [userId, discount]);
+
+      await spinningMsg.edit({
+        content: `🎡 [${sectors.join(" | ")}]`,
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("🎉 Поздравляем!")
+            .setDescription(`Ты выиграл промокод на **${discount}%** скидку!\n\nКрутить снова можно через 24 часа.`)
+            .setColor("#00ff88")
+        ]
+      });
+
+      await sendLog("🎁 Новый промокод", `Пользователь: <@${userId}>\nСкидка: **${discount}%**`);
     }
-  }
 
-  const wait = (ms) => new Promise((res) => setTimeout(res, ms));
+    // === !профиль ===
+    if (cmd === "!профиль") {
+      const userId = message.author.id;
+      const res = await pool.query(
+        "SELECT discount, created_at FROM promos WHERE user_id=$1 ORDER BY id DESC",
+        [userId]
+      );
 
-  // Начальная анимация колеса
-  let sectors = ["💥", "🎲", "🎁", "❌", "💰", "❤️"];
-  let spinningMsg = await message.reply("🎡 [💥 | 🎲 | 🎁 | ❌ | 💰 | ❤️]\nКрутится колесо удачи...");
+      if (res.rowCount === 0) {
+        await message.reply("🧍 У тебя пока нет выигранных промокодов.");
+        return;
+      }
 
-  // Эффект вращения (анимация 2–3 секунды)
-  for (let i = 0; i < 12; i++) {
-    sectors.unshift(sectors.pop()); // сдвигаем вправо
-    await wait(200);
-    await spinningMsg.edit(`🎡 [${sectors.join(" | ")}]\nКрутится колесо удачи...`);
-  }
+      const list = res.rows
+        .map(
+          (r, i) =>
+            `#${i + 1} — **${r.discount}%** (от ${new Date(r.created_at).toLocaleString("ru-RU")})`
+        )
+        .join("\n");
 
-  // 🎲 Случайный шанс выигрыша
-  const chance = Math.random(); // от 0 до 1
-  const winChance = 0.10; // 10% шанс
-  const nearDiff = ((chance - winChance) * 100).toFixed(1);
+      const embed = new EmbedBuilder()
+        .setTitle(`📜 Профиль игрока ${message.author.username}`)
+        .setDescription(`Твои промокоды:\n${list}`)
+        .setColor("#2f3136");
 
-  await wait(500);
-
-  if (chance > winChance) {
-    // ❌ Проигрыш
-    await spinningMsg.edit({
-      content: `🎡 [${sectors.join(" | ")}]`,
-      embeds: [
-        new EmbedBuilder()
-          .setTitle("😢 Почти!")
-          .setDescription(`Колесо остановилось рядом с выигрышем...\nТебе не хватило всего **${nearDiff}%** до победы!\n\nПопробуй снова через 24 часа 🎡`)
-          .setColor("#ff5555")
-      ]
-    });
-    return;
-  }
-
-  // 🎉 Победа!
-  const discount = Math.floor(Math.random() * (60 - 5 + 1)) + 5;
-  await pool.query("INSERT INTO promos (user_id, discount) VALUES ($1, $2)", [userId, discount]);
-
-  await spinningMsg.edit({
-    content: `🎡 [${sectors.join(" | ")}]`,
-    embeds: [
-      new EmbedBuilder()
-        .setTitle("🎉 Поздравляем!")
-        .setDescription(`Ты выиграл промокод на **${discount}%** скидку!\n\nКрутить снова можно через 24 часа.`)
-        .setColor("#00ff88")
-    ]
-  });
-
-  await sendLog("🎁 Новый промокод", `Пользователь: <@${userId}>\nСкидка: **${discount}%**`);
-}
-
-// === !профиль ===
-if (cmd === "!профиль") {
-  const userId = message.author.id;
-  const res = await pool.query(
-    "SELECT discount, created_at FROM promos WHERE user_id=$1 ORDER BY id DESC",
-    [userId]
-  );
-
-  if (res.rowCount === 0) {
-    await message.reply("🧍 У тебя пока нет выигранных промокодов.");
-    return;
-  }
-
-  const list = res.rows
-    .map(
-      (r, i) =>
-        `#${i + 1} — **${r.discount}%** (от ${new Date(r.created_at).toLocaleString("ru-RU")})`
-    )
-    .join("\n");
-
-  const embed = new EmbedBuilder()
-    .setTitle(`📜 Профиль игрока ${message.author.username}`)
-    .setDescription(`Твои промокоды:\n${list}`)
-    .setColor("#2f3136");
-
-  await message.reply({ embeds: [embed] });
-}
+      await message.reply({ embeds: [embed] });
+    }
 
 // === Запуск ===
 client.once("ready", async () => {
