@@ -215,7 +215,7 @@ client.on("messageCreate", async (message) => {
       const token = args[0];
       const expiresInput = args.slice(1).join(" ");
       if (!token || !expiresInput)
-        return message.reply("⚙️ Формат: `addtoken <токен> <ДД.ММ.ГГГГ ЧЧ:ММ>`");
+        return message.reply("⚙️ Формат: `!выдать <токен> <ДД.ММ.ГГГГ ЧЧ:ММ>`");
 
       const expiresAt = parseRuDateTime(expiresInput);
       if (!expiresAt)
@@ -237,7 +237,7 @@ client.on("messageCreate", async (message) => {
     // === deltoken ===
     if (cmd === "!забрать") {
       const token = args[0];
-      if (!token) return message.reply("⚙️ Формат: `deltoken <токен>`");
+      if (!token) return message.reply("⚙️ Формат: `!забрать <токен>`");
 
       const res = await pool.query("DELETE FROM my_table WHERE token=$1", [token]);
       const embed = new EmbedBuilder()
