@@ -117,7 +117,6 @@ async function initDB() {
     );
   `);
 
-  // 🆕 Таблица для промокодов
   await pool.query(`
     CREATE TABLE IF NOT EXISTS promos (
       id SERIAL PRIMARY KEY,
@@ -153,77 +152,120 @@ function scheduleTokenDeletion(token, expiresAt) {
 // === Команды Discord ===
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
-  if (message.author.id !== ADMIN_ID) return;
 
   const args = message.content.trim().split(/\s+/);
   const cmd = args.shift()?.toLowerCase();
 
   try {
-    // === !выдать ===
-   // --- Диагностический блок для !выдать ---
-if (cmd === "!выдать") {
-  const token = args[0];
-  if (!token) return message.reply("⚙️ Формат: `!выдать <токен>`");
-
-  // вычисляем expires (месяц вперёд)
-  const expiresAt = new Date();
-  expiresAt.setMonth(expiresAt.getMonth() + 1);
-
-  try {
-    console.log("=== Диагностика добавления токена ===");
-    console.log("Автор команды:", message.author.id);
-    console.log("ADMIN_ID:", ADMIN_ID);
-    // покажем, к какой базе подключены
-    try {
-      const info = await pool.query("SELECT current_database() AS db, current_user AS user;");
-      console.log("Подключено к базе:", info.rows[0]);
-    } catch (infoErr) {
-      console.error("Ошибка получения current_database():", infoErr);
-    }
-
-    // сам INSERT
-    let insertRes;
-    try {
-      insertRes = await pool.query(
-        "INSERT INTO my_table(token, expires_at) VALUES($1,$2) RETURNING id, token, expires_at;",
-        [token, expiresAt]
+    // === !промо (для всех)
+    if (cmd === "!промо") {
+      const userId = message.author.id;
+      const lastSpin = await pool.query(
+        `SELECT created_at FROM promos WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`,
+        [userId]
       );
-      console.log("INSERT returned:", insertRes.rows);
-    } catch (insertErr) {
-      console.error("❌ Ошибка INSERT:", insertErr);
-      await message.reply("⚠️ Ошибка вставки: " + (insertErr.message || String(insertErr)));
-      return;
-    }
 
-    // Сразу проверим SELECT — убедимся, что запись действительно в той же БД
-    try {
-      const sel = await pool.query("SELECT id, token, expires_at FROM my_table WHERE token=$1 LIMIT 1;", [token]);
-      console.log("SELECT после INSERT:", sel.rowCount, sel.rows);
-      if (sel.rowCount === 0) {
-        await message.reply("⚠️ INSERT отработал, но SELECT ничего не нашёл — вероятно, другая БД.");
+      if (lastSpin.rowCount > 0) {
+        const lastTime = new Date(lastSpin.rows[0].created_at);
+        const diffMs = Date.now() - lastTime.getTime();
+        const diffHours = diffMs / (1000 * 60 * 60);
+        if (diffHours < 24) {
+          const remaining = (24 - diffHours).toFixed(1);
+          await message.reply(`⏰ Ты уже крутил колесо недавно! Попробуй снова через **${remaining} ч.**`);
+          return;
+        }
+      }
+
+      const spinningMsg = await message.reply("🎡 Колесо крутится...");
+      const wait = (ms) => new Promise((res) => setTimeout(res, ms));
+
+      const spinTexts = ["🎡 Колесо крутится...", "🎯 Почти...", "✨ Остановилось!"];
+      for (const text of spinTexts) {
+        await wait(1000);
+        await spinningMsg.edit(text);
+      }
+
+      const chance = Math.random();
+      if (chance > 0.10) {
+        await wait(500);
+        await spinningMsg.edit("😢 Увы, в этот раз без промокода. Попробуй завтра!");
         return;
       }
 
-      // Успех — покажем данные
-      const row = sel.rows[0];
-      await message.reply({
+      const discount = Math.floor(Math.random() * (60 - 5 + 1)) + 5;
+      await pool.query("INSERT INTO promos (user_id, discount) VALUES ($1, $2)", [userId, discount]);
+
+      await wait(500);
+      await spinningMsg.edit({
         embeds: [
           new EmbedBuilder()
-            .setTitle("✅ Токен добавлен (диагностика)")
-            .setDescription(`\`${row.token}\`\nID: ${row.id}\nИстекает: ${new Date(row.expires_at).toLocaleString("ru-RU")}`)
-            .setColor("#2f3136")
+            .setTitle("🎉 Поздравляем!")
+            .setDescription(`Ты выиграл промокод на **${discount}%** скидку!\n\nКрутить снова можно через 24 часа.`)
+            .setColor("#00ff88")
         ]
       });
-    } catch (selErr) {
-      console.error("Ошибка SELECT после INSERT:", selErr);
-      await message.reply("⚠️ Ошибка проверки в базе: " + (selErr.message || String(selErr)));
-    }
-  } catch (err) {
-    console.error("Неожиданная ошибка в !выдать:", err);
-    await message.reply("⚠️ Внутренняя ошибка (смотри логи).");
-  }
-}
 
+      await sendLog("🎁 Новый промокод", `Пользователь: <@${userId}>\nСкидка: **${discount}%**`);
+      return;
+    }
+
+    // === !профиль (для всех)
+    if (cmd === "!профиль") {
+      const userId = message.author.id;
+      const res = await pool.query(
+        "SELECT discount, created_at FROM promos WHERE user_id=$1 ORDER BY id DESC",
+        [userId]
+      );
+
+      if (res.rowCount === 0) {
+        await message.reply("🧍 У тебя пока нет выигранных промокодов.");
+        return;
+      }
+
+      const list = res.rows
+        .map((r, i) => `#${i + 1} — **${r.discount}%** (от ${new Date(r.created_at).toLocaleString("ru-RU")})`)
+        .join("\n");
+
+      const embed = new EmbedBuilder()
+        .setTitle(`📜 Профиль игрока ${message.author.username}`)
+        .setDescription(`Твои промокоды:\n${list}`)
+        .setColor("#2f3136");
+
+      await message.reply({ embeds: [embed] });
+      return;
+    }
+
+    // === Ниже — только для ADMIN_ID ===
+    if (message.author.id !== ADMIN_ID) return;
+
+    // === !выдать ===
+    if (cmd === "!выдать") {
+      const token = args[0];
+      if (!token) return message.reply("⚙️ Формат: `!выдать <токен>`");
+
+      const expiresAt = new Date();
+      expiresAt.setMonth(expiresAt.getMonth() + 1);
+
+      try {
+        const insertRes = await pool.query(
+          "INSERT INTO my_table(token, expires_at) VALUES($1,$2) RETURNING id, token, expires_at;",
+          [token, expiresAt]
+        );
+
+        const row = insertRes.rows[0];
+        await message.reply({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle("✅ Токен добавлен")
+              .setDescription(`\`${row.token}\`\nID: ${row.id}\nИстекает: ${new Date(row.expires_at).toLocaleString("ru-RU")}`)
+              .setColor("#2f3136")
+          ]
+        });
+      } catch (err) {
+        console.error("Ошибка INSERT:", err);
+        await message.reply("⚠️ Ошибка при добавлении токена: " + err.message);
+      }
+    }
 
     // === !лист ===
     if (cmd === "!лист") {
@@ -247,104 +289,6 @@ if (cmd === "!выдать") {
       message.reply(res.rowCount ? "🗑️ Токен удалён" : "⚠️ Не найден");
     }
 
-      // === !промо ===
-if (cmd === "!промо") {
-  const userId = message.author.id;
-
-  // Проверяем, когда пользователь последний раз крутил колесо
-  const lastSpin = await pool.query(
-    `SELECT created_at FROM promos WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`,
-    [userId]
-  );
-
-  if (lastSpin.rowCount > 0) {
-    const lastTime = new Date(lastSpin.rows[0].created_at);
-    const diffMs = Date.now() - lastTime.getTime();
-    const diffHours = diffMs / (1000 * 60 * 60);
-
-    if (diffHours < 24) {
-      const remaining = (24 - diffHours).toFixed(1);
-      await message.reply(`⏰ Ты уже крутил колесо недавно! Попробуй снова через **${remaining} ч.**`);
-      return;
-    }
-  }
-
-  // Эффект ожидания
-  const spinningMsg = await message.reply("🎡 Колесо крутится...");
-  const wait = (ms) => new Promise((res) => setTimeout(res, ms));
-
-  // Симуляция "крутящегося колеса"
-  const spinTexts = [
-    "🎡 Колесо крутится...",
-    "🎯 Почти...",
-    "✨ Остановилось!"
-  ];
-
-  for (const text of spinTexts) {
-    await wait(1000);
-    await spinningMsg.edit(text);
-  }
-
-  // 🎯 10% шанс на выигрыш
-  const chance = Math.random();
-  if (chance > 0.10) {
-    await wait(500);
-    await spinningMsg.edit("😢 Увы, в этот раз без промокода. Попробуй завтра!");
-    return;
-  }
-
-  // 🎁 Генерируем скидку от 5% до 60%
-  const discount = Math.floor(Math.random() * (60 - 5 + 1)) + 5;
-
-  // 💾 Сохраняем промо
-  await pool.query(
-    "INSERT INTO promos (user_id, discount) VALUES ($1, $2)",
-    [userId, discount]
-  );
-
-  // 🎉 Обновляем сообщение
-  await wait(500);
-  await spinningMsg.edit({
-    embeds: [
-      new EmbedBuilder()
-        .setTitle("🎉 Поздравляем!")
-        .setDescription(`Ты выиграл промокод на **${discount}%** скидку!\n\nКрутить снова можно через 24 часа.`)
-        .setColor("#00ff88")
-    ]
-  });
-
-  // 🔔 Лог админу
-  await sendLog("🎁 Новый промокод", `Пользователь: <@${userId}>\nСкидка: **${discount}%**`);
-}
-
-
-// === !профиль ===
-if (cmd === "!профиль") {
-  const userId = message.author.id;
-  const res = await pool.query(
-    "SELECT discount, created_at FROM promos WHERE user_id=$1 ORDER BY id DESC",
-    [userId]
-  );
-
-  if (res.rowCount === 0) {
-    await message.reply("🧍 У тебя пока нет выигранных промокодов.");
-    return;
-  }
-
-  const list = res.rows
-    .map(
-      (r, i) =>
-        `#${i + 1} — **${r.discount}%** (от ${new Date(r.created_at).toLocaleString("ru-RU")})`
-    )
-    .join("\n");
-
-  const embed = new EmbedBuilder()
-    .setTitle(`📜 Профиль игрока ${message.author.username}`)
-    .setDescription(`Твои промокоды:\n${list}`)
-    .setColor("#2f3136");
-
-  await message.reply({ embeds: [embed] });
-} 
   } catch (err) {
     console.error("Ошибка команды:", err);
     message.reply("⚠️ Ошибка при выполнении команды.");
