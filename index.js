@@ -209,31 +209,65 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // === !профиль (для всех)
-    if (cmd === "!профиль") {
-      const userId = message.author.id;
-      const res = await pool.query(
-        "SELECT discount, created_at FROM promos WHERE user_id=$1 ORDER BY id DESC",
-        [userId]
-      );
+    // === !профиль (уникальный дизайн) ===
+if (cmd === "!профиль") {
+  const userId = message.author.id;
+  const res = await pool.query(
+    "SELECT id, discount, created_at FROM promos WHERE user_id=$1 ORDER BY id ASC",
+    [userId]
+  );
 
-      if (res.rowCount === 0) {
-        await message.reply("🧍 У тебя пока нет выигранных промокодов.");
-        return;
+  const hasPromo = res.rowCount > 0;
+
+  // Проверяем наличие токена (чита)
+  const tokenCheck = await pool.query("SELECT 1 FROM my_table WHERE token=$1", [userId]);
+  const hasCheat = tokenCheck.rowCount > 0;
+
+  // 🧾 Список промокодов
+  const promoList = hasPromo
+    ? res.rows
+        .map(
+          (r) =>
+            `🔹 **#${r.id}** — ${r.discount}% (выдан ${new Date(
+              r.created_at
+            ).toLocaleDateString("ru-RU")})`
+        )
+        .join("\n")
+    : "Промокоды пока отсутствуют 😔";
+
+  // 🧩 Описание профиля
+  const embed = new EmbedBuilder()
+    .setColor("#5865F2")
+    .setTitle("🌟 Профиль пользователя")
+    .setThumbnail(message.author.displayAvatarURL({ dynamic: true }))
+    .setDescription(
+      `**👤 Пользователь:** ${message.author.username}\n` +
+      `**💼 Наличие чита:** ${hasCheat ? "✅ Есть доступ" : "❌ Нет доступа"}`
+    )
+    .addFields(
+      {
+        name: "🎟 Активные промокоды",
+        value: promoList,
+        inline: false
+      },
+      {
+        name: "ℹ️ Возможности:",
+        value:
+          "🎁 Передай промокод другу — `!передать <ID>`\n" +
+          "🛒 Используй промокод при покупке — `!купить`\n" +
+          "📅 Новые шансы получить промо — через `!промо`",
+        inline: false
       }
+    )
+    .setFooter({
+      text: "Система лояльности | Активен ежедневно",
+      iconURL: "https://cdn-icons-png.flaticon.com/512/854/854878.png"
+    })
+    .setTimestamp();
 
-      const list = res.rows
-        .map((r, i) => `#${i + 1} — **${r.discount}%** (от ${new Date(r.created_at).toLocaleString("ru-RU")})`)
-        .join("\n");
-
-      const embed = new EmbedBuilder()
-        .setTitle(`📜 Профиль игрока ${message.author.username}`)
-        .setDescription(`Твои промокоды:\n${list}`)
-        .setColor("#2f3136");
-
-      await message.reply({ embeds: [embed] });
-      return;
-    }
+  await message.reply({ embeds: [embed] });
+  return;
+}
 
     // === Ниже — только для ADMIN_ID ===
     if (message.author.id !== ADMIN_ID) return;
