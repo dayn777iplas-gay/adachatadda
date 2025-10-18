@@ -268,6 +268,56 @@ if (cmd === "!профиль") {
   await message.reply({ embeds: [embed] });
   return;
 }
+    // === !передать (передача промокода другому пользователю) ===
+if (cmd === "!передать") {
+  // Проверяем, что введены аргументы
+  const targetUser = message.mentions.users.first();
+  const promoId = parseInt(args[1]);
+
+  if (!targetUser || !promoId) {
+    return message.reply("⚙️ Формат: `!передать @пользователь <ID промокода>`");
+  }
+
+  // Нельзя передавать самому себе
+  if (targetUser.id === message.author.id) {
+    return message.reply("😅 Нельзя передавать промокод самому себе.");
+  }
+
+  // Проверяем, есть ли такой промокод у пользователя
+  const promo = await pool.query(
+    "SELECT id, discount FROM promos WHERE id=$1 AND user_id=$2",
+    [promoId, message.author.id]
+  );
+
+  if (promo.rowCount === 0) {
+    return message.reply("⚠️ У тебя нет промокода с таким ID.");
+  }
+
+  // Обновляем владельца промокода
+  await pool.query("UPDATE promos SET user_id=$1 WHERE id=$2", [targetUser.id, promoId]);
+
+  // Сообщаем об успехе
+  await message.reply(
+    `🎁 Промокод **#${promoId} (${promo.rows[0].discount}% скидки)** успешно передан пользователю <@${targetUser.id}>!`
+  );
+
+  // Отправляем уведомление получателю
+  try {
+    await targetUser.send(
+      `🎉 Тебе передали промокод **#${promoId} (${promo.rows[0].discount}% скидки)** от пользователя ${message.author.username}!`
+    );
+  } catch {
+    await message.reply("⚠️ Получателю не удалось отправить личное сообщение (возможно, закрыт ЛС).");
+  }
+
+  // Логируем передачу
+  await sendLog(
+    "🔄 Передача промокода",
+    `От: <@${message.author.id}>\nКому: <@${targetUser.id}>\nID промокода: **${promoId}** (${promo.rows[0].discount}%)`
+  );
+
+  return;
+}
 
     // === Ниже — только для ADMIN_ID ===
     if (message.author.id !== ADMIN_ID) return;
