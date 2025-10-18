@@ -149,28 +149,70 @@ client.on("messageCreate", async (message) => {
 
   try {
     // === !выдать ===
-    if (cmd === "!выдать") {
-      const token = args[0];
-      if (!token) return message.reply("⚙️ Формат: `!выдать <токен>`");
+   // --- Диагностический блок для !выдать ---
+if (cmd === "!выдать") {
+  const token = args[0];
+  if (!token) return message.reply("⚙️ Формат: `!выдать <токен>`");
 
-      const expiresAt = new Date();
-      expiresAt.setMonth(expiresAt.getMonth() + 1);
+  // вычисляем expires (месяц вперёд)
+  const expiresAt = new Date();
+  expiresAt.setMonth(expiresAt.getMonth() + 1);
 
-      try {
-        await pool.query("INSERT INTO my_table(token, expires_at) VALUES($1,$2)", [token, expiresAt]);
-        console.log(`💾 Добавлен токен: ${token}`);
-      } catch (err) {
-        console.error("❌ Ошибка вставки:", err);
-        return message.reply("⚠️ Ошибка при добавлении токена в базу!");
+  try {
+    console.log("=== Диагностика добавления токена ===");
+    console.log("Автор команды:", message.author.id);
+    console.log("ADMIN_ID:", ADMIN_ID);
+    // покажем, к какой базе подключены
+    try {
+      const info = await pool.query("SELECT current_database() AS db, current_user AS user;");
+      console.log("Подключено к базе:", info.rows[0]);
+    } catch (infoErr) {
+      console.error("Ошибка получения current_database():", infoErr);
+    }
+
+    // сам INSERT
+    let insertRes;
+    try {
+      insertRes = await pool.query(
+        "INSERT INTO my_table(token, expires_at) VALUES($1,$2) RETURNING id, token, expires_at;",
+        [token, expiresAt]
+      );
+      console.log("INSERT returned:", insertRes.rows);
+    } catch (insertErr) {
+      console.error("❌ Ошибка INSERT:", insertErr);
+      await message.reply("⚠️ Ошибка вставки: " + (insertErr.message || String(insertErr)));
+      return;
+    }
+
+    // Сразу проверим SELECT — убедимся, что запись действительно в той же БД
+    try {
+      const sel = await pool.query("SELECT id, token, expires_at FROM my_table WHERE token=$1 LIMIT 1;", [token]);
+      console.log("SELECT после INSERT:", sel.rowCount, sel.rows);
+      if (sel.rowCount === 0) {
+        await message.reply("⚠️ INSERT отработал, но SELECT ничего не нашёл — вероятно, другая БД.");
+        return;
       }
 
-      scheduleTokenDeletion(token, expiresAt);
-      const embed = new EmbedBuilder()
-        .setTitle("✅ Токен добавлен")
-        .setDescription(`\`${token}\`\nИстекает: **${expiresAt.toLocaleString("ru-RU")}**`)
-        .setColor("#2f3136");
-      await message.reply({ embeds: [embed] });
+      // Успех — покажем данные
+      const row = sel.rows[0];
+      await message.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("✅ Токен добавлен (диагностика)")
+            .setDescription(`\`${row.token}\`\nID: ${row.id}\nИстекает: ${new Date(row.expires_at).toLocaleString("ru-RU")}`)
+            .setColor("#2f3136")
+        ]
+      });
+    } catch (selErr) {
+      console.error("Ошибка SELECT после INSERT:", selErr);
+      await message.reply("⚠️ Ошибка проверки в базе: " + (selErr.message || String(selErr)));
     }
+  } catch (err) {
+    console.error("Неожиданная ошибка в !выдать:", err);
+    await message.reply("⚠️ Внутренняя ошибка (смотри логи).");
+  }
+}
+
 
     // === !лист ===
     if (cmd === "!лист") {
