@@ -247,90 +247,76 @@ if (cmd === "!выдать") {
       message.reply(res.rowCount ? "🗑️ Токен удалён" : "⚠️ Не найден");
     }
 
-      if (cmd === "!промо") {
-      const userId = message.author.id;
+      // === !промо ===
+if (cmd === "!промо") {
+  const userId = message.author.id;
 
-      try {
-        // Проверка кулдауна (24 часа)
-        const lastSpin = await pool.query(
-          `SELECT created_at FROM promos WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`,
-          [userId]
-        );
+  // Проверяем, когда пользователь последний раз крутил колесо
+  const lastSpin = await pool.query(
+    `SELECT created_at FROM promos WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`,
+    [userId]
+  );
 
-        if (lastSpin.rowCount > 0) {
-          const lastTime = new Date(lastSpin.rows[0].created_at);
-          const diffMs = Date.now() - lastTime.getTime();
-          const diffHours = diffMs / (1000 * 60 * 60);
+  if (lastSpin.rowCount > 0) {
+    const lastTime = new Date(lastSpin.rows[0].created_at);
+    const diffMs = Date.now() - lastTime.getTime();
+    const diffHours = diffMs / (1000 * 60 * 60);
 
-          if (diffHours < 24) {
-            const remaining = (24 - diffHours).toFixed(1);
-            await message.reply(`⏰ Ты уже крутил колесо недавно! Попробуй снова через **${remaining} ч.**`);
-            return;
-          }
-        }
+    if (diffHours < 24) {
+      const remaining = (24 - diffHours).toFixed(1);
+      await message.reply(`⏰ Ты уже крутил колесо недавно! Попробуй снова через **${remaining} ч.**`);
+      return;
+    }
+  }
 
-        const wait = (ms) => new Promise((res) => setTimeout(res, ms));
-        let sectors = ["💥", "🎲", "🎁", "❌", "💰", "❤️"];
-        const spinningMsg = await message.reply("🎡 [💥 | 🎲 | 🎁 | ❌ | 💰 | ❤️]\nКолесо крутится...");
+  // Эффект ожидания
+  const spinningMsg = await message.reply("🎡 Колесо крутится...");
+  const wait = (ms) => new Promise((res) => setTimeout(res, ms));
 
-        // Эффект вращения (анимация)
-        for (let i = 0; i < 15; i++) {
-          sectors.unshift(sectors.pop());
-          await spinningMsg.edit(`🎡 [${sectors.join(" | ")}]\n${i < 12 ? "Крутится колесо..." : "Почти остановилось..."}`);
-          await wait(200 + i * 15);
-        }
+  // Симуляция "крутящегося колеса"
+  const spinTexts = [
+    "🎡 Колесо крутится...",
+    "🎯 Почти...",
+    "✨ Остановилось!"
+  ];
 
-        await wait(800);
+  for (const text of spinTexts) {
+    await wait(1000);
+    await spinningMsg.edit(text);
+  }
 
-        const chance = Math.random();
-        const winChance = 0.1;
-        const nearDiff = Math.abs((chance - winChance) * 100).toFixed(1);
+  // 🎯 10% шанс на выигрыш
+  const chance = Math.random();
+  if (chance > 0.10) {
+    await wait(500);
+    await spinningMsg.edit("😢 Увы, в этот раз без промокода. Попробуй завтра!");
+    return;
+  }
 
-        try {
-          if (chance > winChance) {
-            // ❌ Проигрыш
-            const loseEmbed = new EmbedBuilder()
-              .setTitle("😢 Почти!")
-              .setDescription(
-                `Колесо остановилось рядом с выигрышем!\n` +
-                `Тебе не хватило всего **${nearDiff}%** до победы.\n\n` +
-                `Попробуй снова через 24 часа 🎡`
-              )
-              .setColor("#ff5555");
+  // 🎁 Генерируем скидку от 5% до 60%
+  const discount = Math.floor(Math.random() * (60 - 5 + 1)) + 5;
 
-            await spinningMsg.edit({
-              content: `🎡 [${sectors.join(" | ")}]`,
-              embeds: [loseEmbed]
-            });
-          } else {
-            // 🎉 Победа
-            const discount = Math.floor(Math.random() * (60 - 5 + 1)) + 5;
-            await pool.query("INSERT INTO promos (user_id, discount) VALUES ($1, $2)", [userId, discount]);
+  // 💾 Сохраняем промо
+  await pool.query(
+    "INSERT INTO promos (user_id, discount) VALUES ($1, $2)",
+    [userId, discount]
+  );
 
-            const winEmbed = new EmbedBuilder()
-              .setTitle("🎉 Поздравляем!")
-              .setDescription(
-                `Ты выиграл промокод на **${discount}%** скидку!\n\n` +
-                `Крутить снова можно через 24 часа 🎡`
-              )
-              .setColor("#00ff88");
+  // 🎉 Обновляем сообщение
+  await wait(500);
+  await spinningMsg.edit({
+    embeds: [
+      new EmbedBuilder()
+        .setTitle("🎉 Поздравляем!")
+        .setDescription(`Ты выиграл промокод на **${discount}%** скидку!\n\nКрутить снова можно через 24 часа.`)
+        .setColor("#00ff88")
+    ]
+  });
 
-            await spinningMsg.edit({
-              content: `🎡 [${sectors.join(" | ")}]`,
-              embeds: [winEmbed]
-            });
+  // 🔔 Лог админу
+  await sendLog("🎁 Новый промокод", `Пользователь: <@${userId}>\nСкидка: **${discount}%**`);
+}
 
-            await sendLog("🎁 Новый промокод", `Пользователь: <@${userId}>\nСкидка: **${discount}%**`);
-          }
-        } catch (editErr) {
-          console.error("❌ Ошибка при обновлении сообщения колеса:", editErr);
-          await message.reply("⚠️ Ошибка при отображении результата (см. консоль Render).");
-        }
-      } catch (err) {
-        console.error("Ошибка в !промо:", err);
-        await message.reply("⚠️ Что-то пошло не так (см. логи).");
-      }
-    } // <-- вот этих двух скобок у тебя не хватало
 
 // === !профиль ===
 if (cmd === "!профиль") {
