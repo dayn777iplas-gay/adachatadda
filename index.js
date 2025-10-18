@@ -121,32 +121,52 @@ async function sendLog(title, description, color = "#2f3136") {
 
 // === Инициализация базы ===
 async function initDB() {
-  console.log("🧩 Проверка базы данных...");
+  console.log("🧩 Проверка структуры базы данных...");
 
+  // Создаём таблицу, если её нет
   await pool.query(`
     CREATE TABLE IF NOT EXISTS my_table (
       id SERIAL PRIMARY KEY,
-      token TEXT NOT NULL,
-      expires_at TIMESTAMP,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      token TEXT UNIQUE NOT NULL,
+      expires_at TIMESTAMP NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
     );
   `);
 
-  const { rows } = await pool.query(`
-    SELECT column_name FROM information_schema.columns WHERE table_name = 'my_table';
+  // Проверим — нет ли битых колонок
+  const result = await pool.query(`
+    SELECT column_name, data_type FROM information_schema.columns
+    WHERE table_name = 'my_table';
   `);
-  const existing = rows.map(r => r.column_name);
 
-  if (!existing.includes("expires_at")) {
-    await pool.query(`ALTER TABLE my_table ADD COLUMN expires_at TIMESTAMP;`);
+  const columns = result.rows.map(c => c.column_name);
+
+  // Добавляем недостающие поля
+  if (!columns.includes("token")) {
+    await pool.query(`ALTER TABLE my_table ADD COLUMN token TEXT UNIQUE NOT NULL;`);
+    console.log("🛠️ Добавлена колонка token");
+  }
+  if (!columns.includes("expires_at")) {
+    await pool.query(`ALTER TABLE my_table ADD COLUMN expires_at TIMESTAMP NOT NULL;`);
     console.log("🛠️ Добавлена колонка expires_at");
   }
-  if (!existing.includes("created_at")) {
-    await pool.query(`ALTER TABLE my_table ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;`);
+  if (!columns.includes("created_at")) {
+    await pool.query(`ALTER TABLE my_table ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL;`);
     console.log("🛠️ Добавлена колонка created_at");
   }
 
-  console.log("✅ Database initialized and verified.");
+  // Проверяем, можно ли записать тест
+  await pool.query("DELETE FROM my_table WHERE token='__test__';");
+  await pool.query("INSERT INTO my_table(token, expires_at) VALUES($1, NOW() + interval '1 minute');", ["__test__"]);
+  const check = await pool.query("SELECT * FROM my_table WHERE token='__test__';");
+  if (check.rowCount === 1) {
+    console.log("✅ Проверка записи: таблица рабочая!");
+  } else {
+    console.error("❌ Ошибка записи — проверь PostgreSQL!");
+  }
+  await pool.query("DELETE FROM my_table WHERE token='__test__';");
+
+  console.log("✅ Database полностью готова!");
   await removeExpiredTokens();
 }
 
