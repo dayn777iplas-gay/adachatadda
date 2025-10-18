@@ -246,7 +246,7 @@ if (cmd === "!выдать") {
       const res = await pool.query("DELETE FROM my_table WHERE token=$1", [token]);
       message.reply(res.rowCount ? "🗑️ Токен удалён" : "⚠️ Не найден");
     }
-    // === !промо ===
+       // === !промо ===
     if (cmd === "!промо") {
       const userId = message.author.id;
 
@@ -270,54 +270,60 @@ if (cmd === "!выдать") {
 
       const wait = (ms) => new Promise((res) => setTimeout(res, ms));
 
-      // === Анимация колеса ===
+      // === Анимация вращения ===
       let sectors = ["💥", "🎲", "🎁", "❌", "💰", "❤️"];
       let spinningMsg = await message.reply("🎡 [💥 | 🎲 | 🎁 | ❌ | 💰 | ❤️]\nКрутится колесо удачи...");
 
-      // Эффект вращения (плавный)
       for (let i = 0; i < 15; i++) {
         sectors.unshift(sectors.pop());
         await spinningMsg.edit(`🎡 [${sectors.join(" | ")}]\nКрутится колесо удачи...`);
-        await wait(300 - i * 15); // плавное замедление
+        await wait(300 - i * 15);
       }
 
-      // Пауза перед итогом
       await wait(700);
 
-      // === Вычисляем результат ===
       const chance = Math.random();
       const winChance = 0.1;
       const nearDiff = Math.abs((chance - winChance) * 100).toFixed(1);
 
       if (chance > winChance) {
+        // ❌ Проигрыш
+        const embed = new EmbedBuilder()
+          .setTitle("😢 Почти!")
+          .setDescription(
+            `Колесо остановилось рядом с выигрышем...\n` +
+            `Тебе не хватило всего **${nearDiff}%** до победы!\n\n` +
+            `Попробуй снова через 24 часа 🎡`
+          )
+          .setColor("#ff5555");
+
         await spinningMsg.edit({
           content: `🎡 [${sectors.join(" | ")}]`,
-          embeds: [
-            new EmbedBuilder()
-              .setTitle("😢 Почти!")
-              .setDescription(`Колесо остановилось рядом с выигрышем...\nНе хватило всего **${nearDiff}%** до победы 😭\nПопробуй снова через 24 часа 🎡`)
-              .setColor("#ff5555")
-          ]
+          embeds: [embed]
         });
         return;
       }
 
-      // === Победа ===
+      // 🎉 Победа!
       const discount = Math.floor(Math.random() * (60 - 5 + 1)) + 5;
       await pool.query("INSERT INTO promos (user_id, discount) VALUES ($1, $2)", [userId, discount]);
 
+      const embedWin = new EmbedBuilder()
+        .setTitle("🎉 Поздравляем!")
+        .setDescription(
+          `Ты выиграл промокод на **${discount}%** скидку!\n\n` +
+          `Крутить снова можно через 24 часа.`
+        )
+        .setColor("#00ff88");
+
       await spinningMsg.edit({
         content: `🎡 [${sectors.join(" | ")}]`,
-        embeds: [
-          new EmbedBuilder()
-            .setTitle("🎉 Поздравляем!")
-            .setDescription(`Ты выиграл промокод на **${discount}%** скидку!\n\nКрутить снова можно через 24 часа.`)
-            .setColor("#00ff88")
-        ]
+        embeds: [embedWin]
       });
 
       await sendLog("🎁 Новый промокод", `Пользователь: <@${userId}>\nСкидка: **${discount}%**`);
     }
+
 
 // === !профиль ===
 if (cmd === "!профиль") {
