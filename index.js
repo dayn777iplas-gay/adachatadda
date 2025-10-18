@@ -235,9 +235,9 @@ client.on("messageCreate", async (message) => {
     }
 
     // === deltoken ===
-    if (cmd === "!забрать") {
+    if (cmd === "!удалить") {
       const token = args[0];
-      if (!token) return message.reply("⚙️ Формат: `!забрать <токен>`");
+      if (!token) return message.reply("⚙️ Формат: `!удалить <токен>`");
 
       const res = await pool.query("DELETE FROM my_table WHERE token=$1", [token]);
       const embed = new EmbedBuilder()
