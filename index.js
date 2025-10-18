@@ -212,27 +212,32 @@ client.on("messageCreate", async (message) => {
   try {
     // === addtoken ===
     if (cmd === "!выдать") {
-      const token = args[0];
-      const expiresInput = args.slice(1).join(" ");
-      if (!token || !expiresInput)
-        return message.reply("⚙️ Формат: `!выдать <токен> <ДД.ММ.ГГГГ ЧЧ:ММ>`");
+  const token = args[0];
+  if (!token)
+    return message.reply("⚙️ Формат: `!выдать <токен>` (срок автоматически 1 месяц)");
 
-      const expiresAt = parseRuDateTime(expiresInput);
-      if (!expiresAt)
-        return message.reply("⚠️ Неверный формат даты. Пример: `16.10.2025 23:30`");
+  // создаём срок действия на 1 месяц
+  const expiresAt = new Date();
+  expiresAt.setMonth(expiresAt.getMonth() + 1);
 
-      await pool.query("INSERT INTO my_table(token, expires_at) VALUES($1,$2)", [token, expiresAt]);
-      scheduleTokenDeletion(token, expiresAt);
+  await pool.query("INSERT INTO my_table(token, expires_at) VALUES($1,$2)", [token, expiresAt]);
+  scheduleTokenDeletion(token, expiresAt);
 
-      const embed = new EmbedBuilder()
-        .setTitle("✅ Токен добавлен")
-        .setDescription(`\`${token}\`\nИстекает: **${expiresInput}**`)
-        .setColor("#2f3136")
-        .setTimestamp();
+  const expiresString = expiresAt.toLocaleString("ru-RU", { timeZone: "Europe/Kiev" });
 
-      await message.reply({ embeds: [embed] });
-      await sendLog("✅ Добавлен токен", `\`${token}\`\nИстекает: ${expiresInput}\nДобавил: <@${message.author.id}>`);
-    }
+  const embed = new EmbedBuilder()
+    .setTitle("✅ Токен добавлен")
+    .setDescription(`\`${token}\`\nИстекает: **${expiresString}**`)
+    .setColor("#2f3136")
+    .setTimestamp();
+
+  await message.reply({ embeds: [embed] });
+  await sendLog(
+    "✅ Добавлен токен",
+    `\`${token}\`\nИстекает через 1 месяц — ${expiresString}\nДобавил: <@${message.author.id}>`
+  );
+}
+
 
     // === deltoken ===
     if (cmd === "!удалить") {
