@@ -211,7 +211,7 @@ client.on("messageCreate", async (message) => {
 
   try {
     // === addtoken ===
-    if (cmd === "addtoken") {
+    if (cmd === "!выдать") {
       const token = args[0];
       const expiresInput = args.slice(1).join(" ");
       if (!token || !expiresInput)
@@ -235,7 +235,7 @@ client.on("messageCreate", async (message) => {
     }
 
     // === deltoken ===
-    if (cmd === "deltoken") {
+    if (cmd === "!забрать") {
       const token = args[0];
       if (!token) return message.reply("⚙️ Формат: `deltoken <токен>`");
 
@@ -252,7 +252,7 @@ client.on("messageCreate", async (message) => {
     }
 
     // === listtokens ===
-    if (cmd === "listtokens") {
+    if (cmd === "!лист") {
       await removeExpiredTokens();
       const res = await pool.query("SELECT token, expires_at FROM my_table ORDER BY id DESC");
       const list = res.rows.length
