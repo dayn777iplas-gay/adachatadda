@@ -325,6 +325,7 @@ if (cmd === "!выдать") {
     } catch (editErr) {
       console.error("❌ Ошибка при обновлении сообщения колеса:", editErr);
       await message.reply("⚠️ Ошибка при отображении результата (см. консоль Render).");
+     }
     }
 
 
