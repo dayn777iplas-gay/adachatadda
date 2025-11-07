@@ -108,6 +108,7 @@ async function sendLog(title, description, color = "#2f3136") {
 
 // === Инициализация базы ===
 async function initDB() {
+  // Токены (доступы)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS my_table (
       id SERIAL PRIMARY KEY,
@@ -117,12 +118,21 @@ async function initDB() {
     );
   `);
 
+  // Выигранные промокоды
   await pool.query(`
     CREATE TABLE IF NOT EXISTS promos (
       id SERIAL PRIMARY KEY,
       user_id TEXT NOT NULL,
       discount INTEGER NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // Кулдаун попыток (фиксируем сам факт крутки, даже если не выпало)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS promo_cooldowns (
+      user_id TEXT PRIMARY KEY,
+      last_spin_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `);
 
@@ -138,7 +148,7 @@ async function removeExpiredTokens() {
   }
 }
 
-// === Планировщик ===
+// === Планировщик (опционально, если хочешь при точном времени удалять конкретный токен) ===
 function scheduleTokenDeletion(token, expiresAt) {
   const delay = expiresAt.getTime() - Date.now();
   if (delay <= 0) return;
@@ -157,34 +167,47 @@ client.on("messageCreate", async (message) => {
   const cmd = args.shift()?.toLowerCase();
 
   try {
-    // === !промо (для всех)
+    // === !промо (для всех) — с кулдауном через promo_cooldowns
     if (cmd === "!промо") {
       const userId = message.author.id;
-      const lastSpin = await pool.query(
-        `SELECT created_at FROM promos WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`,
+
+      // 1) Пытаемся атомарно «захватить» крутку раз в 24 часа
+      const gate = await pool.query(
+        `
+        INSERT INTO promo_cooldowns (user_id, last_spin_at)
+        VALUES ($1, NOW())
+        ON CONFLICT (user_id) DO UPDATE
+          SET last_spin_at = EXCLUDED.last_spin_at
+        WHERE promo_cooldowns.last_spin_at <= NOW() - INTERVAL '24 hours'
+        RETURNING last_spin_at;
+        `,
         [userId]
       );
 
-      if (lastSpin.rowCount > 0) {
-        const lastTime = new Date(lastSpin.rows[0].created_at);
-        const diffMs = Date.now() - lastTime.getTime();
-        const diffHours = diffMs / (1000 * 60 * 60);
-        if (diffHours < 24) {
-          const remaining = (24 - diffHours).toFixed(1);
-          await message.reply(`⏰ Ты уже крутил колесо недавно! Попробуй снова через **${remaining} ч.**`);
-          return;
-        }
+      if (gate.rowCount === 0) {
+        // Кулдаун не истёк — посчитаем оставшееся время
+        const last = await pool.query(
+          `SELECT last_spin_at FROM promo_cooldowns WHERE user_id=$1`,
+          [userId]
+        );
+        const lastTime = new Date(last.rows[0].last_spin_at).getTime();
+        const ms24h = 24 * 60 * 60 * 1000;
+        const remainMs = Math.max(0, ms24h - (Date.now() - lastTime));
+        const remainHours = (remainMs / (1000 * 60 * 60)).toFixed(1);
+
+        await message.reply(`⏰ Ты уже крутил колесо недавно! Попробуй снова через **${remainHours} ч.**`);
+        return;
       }
 
+      // 2) Анимация «крутится»
       const spinningMsg = await message.reply("🎡 Колесо крутится...");
       const wait = (ms) => new Promise((res) => setTimeout(res, ms));
-
-      const spinTexts = ["🎡 Колесо крутится...", "🎯 Почти...", "✨ Остановилось!"];
-      for (const text of spinTexts) {
+      for (const text of ["🎡 Колесо крутится...", "🎯 Почти...", "✨ Остановилось!"]) {
         await wait(1000);
         await spinningMsg.edit(text);
       }
 
+      // 3) Результат
       const chance = Math.random();
       if (chance > 0.10) {
         await wait(500);
@@ -209,120 +232,114 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // === !профиль (уникальный дизайн) ===
-if (cmd === "!профиль") {
-  const userId = message.author.id;
-  const res = await pool.query(
-    "SELECT id, discount, created_at FROM promos WHERE user_id=$1 ORDER BY id ASC",
-    [userId]
-  );
+    // === !профиль (уникальный дизайн)
+    if (cmd === "!профиль") {
+      const userId = message.author.id;
 
-  const hasPromo = res.rowCount > 0;
+      // Показываем только реально выигранные промо (в этой модели в promos только выигрыши)
+      const res = await pool.query(
+        "SELECT id, discount, created_at FROM promos WHERE user_id=$1 ORDER BY id ASC",
+        [userId]
+      );
+      const hasPromo = res.rowCount > 0;
 
-  // Проверяем наличие токена (чита)
-  const tokenCheck = await pool.query("SELECT 1 FROM my_table WHERE token=$1", [userId]);
-  const hasCheat = tokenCheck.rowCount > 0;
+      // ⚠️ Если в my_table хранятся именно токены, а не user_id — эта проверка будет ложной.
+      // Оставляю как у тебя, но лучше завести отдельную таблицу доступов с user_id.
+      const tokenCheck = await pool.query("SELECT 1 FROM my_table WHERE token=$1", [userId]);
+      const hasCheat = tokenCheck.rowCount > 0;
 
-  // 🧾 Список промокодов
-  const promoList = hasPromo
-    ? res.rows
-        .map(
-          (r) =>
-            `🔹 **#${r.id}** — ${r.discount}% (выдан ${new Date(
-              r.created_at
-            ).toLocaleDateString("ru-RU")})`
+      const promoList = hasPromo
+        ? res.rows
+            .map(
+              (r) =>
+                `🔹 **#${r.id}** — ${r.discount}% (выдан ${new Date(
+                  r.created_at
+                ).toLocaleDateString("ru-RU")})`
+            )
+            .join("\n")
+        : "Промокоды пока отсутствуют 😔";
+
+      const embed = new EmbedBuilder()
+        .setColor("#5865F2")
+        .setTitle("🌟 Профиль пользователя")
+        .setThumbnail(message.author.displayAvatarURL({ dynamic: true }))
+        .setDescription(
+          `**👤 Пользователь:** ${message.author.username}\n` +
+          `**💼 Наличие чита:** ${hasCheat ? "✅ Есть доступ" : "❌ Нет доступа"}`
         )
-        .join("\n")
-    : "Промокоды пока отсутствуют 😔";
+        .addFields(
+          {
+            name: "🎟 Активные промокоды",
+            value: promoList,
+            inline: false
+          },
+          {
+            name: "ℹ️ Возможности:",
+            value:
+              "🎁 Передай промокод другу — `!передать <ID>`\n" +
+              "🛒 Используй промокод при покупке — `!купить`\n" +
+              "📅 Новые шансы получить промо — через `!промо`",
+            inline: false
+          }
+        )
+        .setFooter({
+          text: "Система лояльности | Активен ежедневно",
+          iconURL: "https://cdn-icons-png.flaticon.com/512/854/854878.png"
+        })
+        .setTimestamp();
 
-  // 🧩 Описание профиля
-  const embed = new EmbedBuilder()
-    .setColor("#5865F2")
-    .setTitle("🌟 Профиль пользователя")
-    .setThumbnail(message.author.displayAvatarURL({ dynamic: true }))
-    .setDescription(
-      `**👤 Пользователь:** ${message.author.username}\n` +
-      `**💼 Наличие чита:** ${hasCheat ? "✅ Есть доступ" : "❌ Нет доступа"}`
-    )
-    .addFields(
-      {
-        name: "🎟 Активные промокоды",
-        value: promoList,
-        inline: false
-      },
-      {
-        name: "ℹ️ Возможности:",
-        value:
-          "🎁 Передай промокод другу — `!передать <ID>`\n" +
-          "🛒 Используй промокод при покупке — `!купить`\n" +
-          "📅 Новые шансы получить промо — через `!промо`",
-        inline: false
+      await message.reply({ embeds: [embed] });
+      return;
+    }
+
+    // === !передать (передача промокода другому пользователю)
+    if (cmd === "!передать") {
+      const targetUser = message.mentions.users.first();
+      const promoId = parseInt(args[1], 10);
+
+      if (!targetUser || !promoId) {
+        return message.reply("⚙️ Формат: `!передать @пользователь <ID промокода>`");
       }
-    )
-    .setFooter({
-      text: "Система лояльности | Активен ежедневно",
-      iconURL: "https://cdn-icons-png.flaticon.com/512/854/854878.png"
-    })
-    .setTimestamp();
 
-  await message.reply({ embeds: [embed] });
-  return;
-}
-    // === !передать (передача промокода другому пользователю) ===
-if (cmd === "!передать") {
-  // Проверяем, что введены аргументы
-  const targetUser = message.mentions.users.first();
-  const promoId = parseInt(args[1]);
+      if (targetUser.id === message.author.id) {
+        return message.reply("😅 Нельзя передавать промокод самому себе.");
+      }
 
-  if (!targetUser || !promoId) {
-    return message.reply("⚙️ Формат: `!передать @пользователь <ID промокода>`");
-  }
+      const promo = await pool.query(
+        "SELECT id, discount FROM promos WHERE id=$1 AND user_id=$2",
+        [promoId, message.author.id]
+      );
 
-  // Нельзя передавать самому себе
-  if (targetUser.id === message.author.id) {
-    return message.reply("😅 Нельзя передавать промокод самому себе.");
-  }
+      if (promo.rowCount === 0) {
+        return message.reply("⚠️ У тебя нет промокода с таким ID.");
+      }
 
-  // Проверяем, есть ли такой промокод у пользователя
-  const promo = await pool.query(
-    "SELECT id, discount FROM promos WHERE id=$1 AND user_id=$2",
-    [promoId, message.author.id]
-  );
+      await pool.query("UPDATE promos SET user_id=$1 WHERE id=$2", [targetUser.id, promoId]);
 
-  if (promo.rowCount === 0) {
-    return message.reply("⚠️ У тебя нет промокода с таким ID.");
-  }
+      await message.reply(
+        `🎁 Промокод **#${promoId} (${promo.rows[0].discount}% скидки)** успешно передан пользователю <@${targetUser.id}>!`
+      );
 
-  // Обновляем владельца промокода
-  await pool.query("UPDATE promos SET user_id=$1 WHERE id=$2", [targetUser.id, promoId]);
+      try {
+        await targetUser.send(
+          `🎉 Тебе передали промокод **#${promoId} (${promo.rows[0].discount}% скидки)** от пользователя ${message.author.username}!`
+        );
+      } catch {
+        await message.reply("⚠️ Получателю не удалось отправить личное сообщение (возможно, закрыт ЛС).");
+      }
 
-  // Сообщаем об успехе
-  await message.reply(
-    `🎁 Промокод **#${promoId} (${promo.rows[0].discount}% скидки)** успешно передан пользователю <@${targetUser.id}>!`
-  );
+      await sendLog(
+        "🔄 Передача промокода",
+        `От: <@${message.author.id}>\nКому: <@${targetUser.id}>\nID промокода: **${promoId}** (${promo.rows[0].discount}%)`
+      );
 
-  // Отправляем уведомление получателю
-  try {
-    await targetUser.send(
-      `🎉 Тебе передали промокод **#${promoId} (${promo.rows[0].discount}% скидки)** от пользователя ${message.author.username}!`
-    );
-  } catch {
-    await message.reply("⚠️ Получателю не удалось отправить личное сообщение (возможно, закрыт ЛС).");
-  }
-
-  // Логируем передачу
-  await sendLog(
-    "🔄 Передача промокода",
-    `От: <@${message.author.id}>\nКому: <@${targetUser.id}>\nID промокода: **${promoId}** (${promo.rows[0].discount}%)`
-  );
-
-  return;
-}
+      return;
+    }
 
     // === Ниже — только для ADMIN_ID ===
     if (message.author.id !== ADMIN_ID) return;
 
-    // === !выдать ===
+    // === !выдать
     if (cmd === "!выдать") {
       const token = args[0];
       if (!token) return message.reply("⚙️ Формат: `!выдать <токен>`");
@@ -349,9 +366,10 @@ if (cmd === "!передать") {
         console.error("Ошибка INSERT:", err);
         await message.reply("⚠️ Ошибка при добавлении токена: " + err.message);
       }
+      return;
     }
 
-    // === !лист ===
+    // === !лист
     if (cmd === "!лист") {
       await removeExpiredTokens();
       const res = await pool.query("SELECT token, expires_at FROM my_table ORDER BY id DESC");
@@ -363,19 +381,21 @@ if (cmd === "!передать") {
         .setDescription(list)
         .setColor("#2f3136");
       await message.reply({ embeds: [embed] });
+      return;
     }
 
-    // === !удалить ===
+    // === !удалить
     if (cmd === "!удалить") {
       const token = args[0];
       if (!token) return message.reply("⚙️ Формат: `!удалить <токен>`");
       const res = await pool.query("DELETE FROM my_table WHERE token=$1", [token]);
-      message.reply(res.rowCount ? "🗑️ Токен удалён" : "⚠️ Не найден");
+      await message.reply(res.rowCount ? "🗑️ Токен удалён" : "⚠️ Не найден");
+      return;
     }
 
   } catch (err) {
     console.error("Ошибка команды:", err);
-    message.reply("⚠️ Ошибка при выполнении команды.");
+    await message.reply("⚠️ Ошибка при выполнении команды.");
   }
 });
 
@@ -386,7 +406,7 @@ client.once("ready", async () => {
   await removeExpiredTokens();
 });
 
-// === Самопинг ===
+// === Самопинг (Render keep-alive) ===
 setInterval(() => {
   fetch("https://adadadadad-97sj.onrender.com/check/1").catch(() => {});
 }, 5 * 60 * 1000);
