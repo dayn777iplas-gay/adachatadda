@@ -128,7 +128,7 @@ async function initDB() {
     );
   `);
 
-  // Кулдаун попыток (фиксируем сам факт крутки, даже если не выпало)
+  // Кулдаун попыток (фиксируем факт крутки, даже если не выпало)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS promo_cooldowns (
       user_id TEXT PRIMARY KEY,
@@ -148,7 +148,7 @@ async function removeExpiredTokens() {
   }
 }
 
-// === Планировщик (опционально, если хочешь при точном времени удалять конкретный токен) ===
+// === Планировщик (опционально) ===
 function scheduleTokenDeletion(token, expiresAt) {
   const delay = expiresAt.getTime() - Date.now();
   if (delay <= 0) return;
@@ -167,11 +167,11 @@ client.on("messageCreate", async (message) => {
   const cmd = args.shift()?.toLowerCase();
 
   try {
-    // === !промо (для всех) — с кулдауном через promo_cooldowns
+    // === !промо (для всех) — кулдаун через promo_cooldowns
     if (cmd === "!промо") {
       const userId = message.author.id;
 
-      // 1) Пытаемся атомарно «захватить» крутку раз в 24 часа
+      // 1) Атомарный гейт раз в 24 часа
       const gate = await pool.query(
         `
         INSERT INTO promo_cooldowns (user_id, last_spin_at)
@@ -185,7 +185,7 @@ client.on("messageCreate", async (message) => {
       );
 
       if (gate.rowCount === 0) {
-        // Кулдаун не истёк — посчитаем оставшееся время
+        // Кулдаун не истёк
         const last = await pool.query(
           `SELECT last_spin_at FROM promo_cooldowns WHERE user_id=$1`,
           [userId]
@@ -236,15 +236,14 @@ client.on("messageCreate", async (message) => {
     if (cmd === "!профиль") {
       const userId = message.author.id;
 
-      // Показываем только реально выигранные промо (в этой модели в promos только выигрыши)
+      // В этой модели в promos только выигрыши и ручные выдачи
       const res = await pool.query(
         "SELECT id, discount, created_at FROM promos WHERE user_id=$1 ORDER BY id ASC",
         [userId]
       );
       const hasPromo = res.rowCount > 0;
 
-      // ⚠️ Если в my_table хранятся именно токены, а не user_id — эта проверка будет ложной.
-      // Оставляю как у тебя, но лучше завести отдельную таблицу доступов с user_id.
+      // ⚠️ Зависит от того, что реально хранится в my_table
       const tokenCheck = await pool.query("SELECT 1 FROM my_table WHERE token=$1", [userId]);
       const hasCheat = tokenCheck.rowCount > 0;
 
@@ -339,7 +338,59 @@ client.on("messageCreate", async (message) => {
     // === Ниже — только для ADMIN_ID ===
     if (message.author.id !== ADMIN_ID) return;
 
-    // === !выдать
+    // === !выдатьпромо @user <скидка>
+    if (cmd === "!выдатьпромо") {
+      // Поддержка: !выдатьпромо @mention 25  ИЛИ  !выдатьпромо 123456789012345678 25
+      let target = message.mentions.users.first() || null;
+      let discountArgIndex = 1;
+
+      if (!target && args[0]) {
+        // пробуем как userId
+        try {
+          target = await client.users.fetch(args[0]);
+          discountArgIndex = 1;
+        } catch {
+          // если первый аргумент не id, значит возможно формат "!выдатьпромо 25" (нет пользователя)
+        }
+      }
+
+      const discount = parseInt(args[discountArgIndex], 10);
+
+      if (!target || !Number.isInteger(discount) || discount < 1 || discount > 100) {
+        return message.reply("⚙️ Формат: `!выдатьпромо @пользователь <1..100>` (например, `!выдатьпромо @User 25`)");
+      }
+
+      await pool.query(
+        "INSERT INTO promos (user_id, discount) VALUES ($1, $2)",
+        [target.id, discount]
+      );
+
+      // Сообщение в канал
+      await message.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("✅ Промокод выдан")
+            .setDescription(`Получатель: <@${target.id}>\nСкидка: **${discount}%**`)
+            .setColor("#00c853")
+        ]
+      });
+
+      // Пытаемся уведомить получателя в ЛС
+      try {
+        await target.send(`🎁 Администратор выдал тебе промокод со скидкой **${discount}%**!`);
+      } catch {
+        // молча игнорируем, если ЛС закрыт
+      }
+
+      await sendLog(
+        "🏷️ Выдача промокода (админ)",
+        `Админ: <@${message.author.id}>\nКому: <@${target.id}>\nСкидка: **${discount}%**`
+      );
+
+      return;
+    }
+
+    // === !выдать (токен доступа)
     if (cmd === "!выдать") {
       const token = args[0];
       if (!token) return message.reply("⚙️ Формат: `!выдать <токен>`");
@@ -369,7 +420,7 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // === !лист
+    // === !лист (токены)
     if (cmd === "!лист") {
       await removeExpiredTokens();
       const res = await pool.query("SELECT token, expires_at FROM my_table ORDER BY id DESC");
@@ -384,7 +435,7 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // === !удалить
+    // === !удалить (токен)
     if (cmd === "!удалить") {
       const token = args[0];
       if (!token) return message.reply("⚙️ Формат: `!удалить <токен>`");
