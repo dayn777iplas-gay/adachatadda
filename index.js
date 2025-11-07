@@ -2,7 +2,10 @@ import {
   Client,
   GatewayIntentBits,
   EmbedBuilder,
-  Partials
+  Partials,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle
 } from "discord.js";
 import { Pool } from "pg";
 import express from "express";
@@ -118,7 +121,7 @@ async function initDB() {
     );
   `);
 
-  // Выигранные промокоды
+  // Выигранные/выданные промокоды
   await pool.query(`
     CREATE TABLE IF NOT EXISTS promos (
       id SERIAL PRIMARY KEY,
@@ -128,7 +131,7 @@ async function initDB() {
     );
   `);
 
-  // Кулдаун попыток (фиксируем факт крутки, даже если не выпало)
+  // Кулдаун попыток
   await pool.query(`
     CREATE TABLE IF NOT EXISTS promo_cooldowns (
       user_id TEXT PRIMARY KEY,
@@ -148,15 +151,33 @@ async function removeExpiredTokens() {
   }
 }
 
-// === Планировщик (опционально) ===
-function scheduleTokenDeletion(token, expiresAt) {
-  const delay = expiresAt.getTime() - Date.now();
-  if (delay <= 0) return;
-  setTimeout(async () => {
-    await pool.query("DELETE FROM my_table WHERE token=$1", [token]);
-    console.log(`🕒 Token ${token} удалён (срок истёк)`);
-    await sendLog("🕒 Токен удалён по времени", `\`${token}\``);
-  }, delay);
+// === Вспомогательные ===
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// построить 3x4 «колесо» кнопками; activeIndex подсвечиваем
+function buildWheelComponents(segments, activeIndex) {
+  const rows = [];
+  for (let r = 0; r < 3; r++) {
+    const row = new ActionRowBuilder();
+    for (let c = 0; c < 4; c++) {
+      const i = r * 4 + c;
+      const label = segments[i];
+      // Базовый стиль: проценты зелёные, пустые серые
+      let style = label === "—" ? ButtonStyle.Secondary : ButtonStyle.Success;
+      // Активный сектор выделяем синим
+      if (i === activeIndex) style = ButtonStyle.Primary;
+
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`spin_${i}`) // клики не обрабатываем, всё отключено
+          .setLabel(label)
+          .setStyle(style)
+          .setDisabled(true)
+      );
+    }
+    rows.push(row);
+  }
+  return rows;
 }
 
 // === Команды Discord ===
@@ -167,11 +188,11 @@ client.on("messageCreate", async (message) => {
   const cmd = args.shift()?.toLowerCase();
 
   try {
-    // === !промо (для всех) — кулдаун через promo_cooldowns
+    // === !промо — с визуальной рулеткой ===
     if (cmd === "!промо") {
       const userId = message.author.id;
 
-      // 1) Атомарный гейт раз в 24 часа
+      // 1) Кулдаун 24ч (атомарный UPSERT-гейт)
       const gate = await pool.query(
         `
         INSERT INTO promo_cooldowns (user_id, last_spin_at)
@@ -185,7 +206,6 @@ client.on("messageCreate", async (message) => {
       );
 
       if (gate.rowCount === 0) {
-        // Кулдаун не истёк
         const last = await pool.query(
           `SELECT last_spin_at FROM promo_cooldowns WHERE user_id=$1`,
           [userId]
@@ -194,56 +214,88 @@ client.on("messageCreate", async (message) => {
         const ms24h = 24 * 60 * 60 * 1000;
         const remainMs = Math.max(0, ms24h - (Date.now() - lastTime));
         const remainHours = (remainMs / (1000 * 60 * 60)).toFixed(1);
-
         await message.reply(`⏰ Ты уже крутил колесо недавно! Попробуй снова через **${remainHours} ч.**`);
         return;
       }
 
-      // 2) Анимация «крутится»
-      const spinningMsg = await message.reply("🎡 Колесо крутится...");
-      const wait = (ms) => new Promise((res) => setTimeout(res, ms));
-      for (const text of ["🎡 Колесо крутится...", "🎯 Почти...", "✨ Остановилось!"]) {
-        await wait(1000);
-        await spinningMsg.edit(text);
+      // 2) Настройка рулетки
+      // 12 секторов: «—» = нет выигрыша; проценты = приз
+      const segments = ["—", "5%", "—", "10%", "—", "15%", "—", "20%", "—", "30%", "—", "60%"];
+
+      // шанс выигрыша 10%
+      const isWin = Math.random() < 0.10;
+      const prizeList = [5, 10, 15, 20, 30, 60];
+      const targetLabel = isWin ? `${prizeList[Math.floor(Math.random() * prizeList.length)]}%` : "—";
+
+      // выбираем финальный сектор с таким лейблом
+      const candidateIdx = segments
+        .map((v, i) => (v === targetLabel ? i : -1))
+        .filter((i) => i !== -1);
+      const finalIndex = candidateIdx[Math.floor(Math.random() * candidateIdx.length)];
+
+      // стартовый сектор и общее кол-во шагов со смещением на финал
+      let currentIndex = Math.floor(Math.random() * segments.length);
+      const spins = 2 + Math.floor(Math.random() * 3); // 2..4 полных оборота
+      const stepsToFinal =
+        spins * segments.length + ((finalIndex - currentIndex + segments.length) % segments.length);
+
+      // 3) Отправляем «колесо» и вращаем с замедлением
+      let wheelMsg = await message.reply({
+        content: "🎡 Запускаю рулетку...",
+        components: buildWheelComponents(segments, currentIndex)
+      });
+
+      for (let step = 0; step < stepsToFinal; step++) {
+        currentIndex = (currentIndex + 1) % segments.length;
+
+        // easing: от 80мс до 420мс с квадратичным замедлением
+        const t = (step + 1) / stepsToFinal;
+        const delay = Math.round(80 + (420 - 80) * (t * t));
+
+        await sleep(delay);
+        await wheelMsg.edit({
+          content: t < 0.85 ? "🎡 Крутится..." : "🎯 Почти...",
+          components: buildWheelComponents(segments, currentIndex)
+        });
       }
 
-      // 3) Результат
-      const chance = Math.random();
-      if (chance > 0.10) {
-        await wait(500);
-        await spinningMsg.edit("😢 Увы, в этот раз без промокода. Попробуй завтра!");
+      // 4) Результат
+      if (!isWin) {
+        await wheelMsg.edit({
+          content: "😢 Увы, в этот раз без промокода. Попробуй завтра!",
+          components: buildWheelComponents(segments, finalIndex)
+        });
         return;
       }
 
-      const discount = Math.floor(Math.random() * (60 - 5 + 1)) + 5;
+      const discount = parseInt(targetLabel, 10); // из "NN%"
       await pool.query("INSERT INTO promos (user_id, discount) VALUES ($1, $2)", [userId, discount]);
 
-      await wait(500);
-      await spinningMsg.edit({
+      await wheelMsg.edit({
+        content: "",
         embeds: [
           new EmbedBuilder()
             .setTitle("🎉 Поздравляем!")
             .setDescription(`Ты выиграл промокод на **${discount}%** скидку!\n\nКрутить снова можно через 24 часа.`)
             .setColor("#00ff88")
-        ]
+        ],
+        components: buildWheelComponents(segments, finalIndex)
       });
 
       await sendLog("🎁 Новый промокод", `Пользователь: <@${userId}>\nСкидка: **${discount}%**`);
       return;
     }
 
-    // === !профиль (уникальный дизайн)
+    // === !профиль
     if (cmd === "!профиль") {
       const userId = message.author.id;
-
-      // В этой модели в promos только выигрыши и ручные выдачи
       const res = await pool.query(
         "SELECT id, discount, created_at FROM promos WHERE user_id=$1 ORDER BY id ASC",
         [userId]
       );
       const hasPromo = res.rowCount > 0;
 
-      // ⚠️ Зависит от того, что реально хранится в my_table
+      // ⚠️ Зависит от твоей логики my_table
       const tokenCheck = await pool.query("SELECT 1 FROM my_table WHERE token=$1", [userId]);
       const hasCheat = tokenCheck.rowCount > 0;
 
@@ -267,11 +319,7 @@ client.on("messageCreate", async (message) => {
           `**💼 Наличие чита:** ${hasCheat ? "✅ Есть доступ" : "❌ Нет доступа"}`
         )
         .addFields(
-          {
-            name: "🎟 Активные промокоды",
-            value: promoList,
-            inline: false
-          },
+          { name: "🎟 Активные промокоды", value: promoList, inline: false },
           {
             name: "ℹ️ Возможности:",
             value:
@@ -291,7 +339,7 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // === !передать (передача промокода другому пользователю)
+    // === !передать
     if (cmd === "!передать") {
       const targetUser = message.mentions.users.first();
       const promoId = parseInt(args[1], 10);
@@ -324,48 +372,41 @@ client.on("messageCreate", async (message) => {
           `🎉 Тебе передали промокод **#${promoId} (${promo.rows[0].discount}% скидки)** от пользователя ${message.author.username}!`
         );
       } catch {
-        await message.reply("⚠️ Получателю не удалось отправить личное сообщение (возможно, закрыт ЛС).");
+        /* ignore DM errors */
       }
 
       await sendLog(
         "🔄 Передача промокода",
         `От: <@${message.author.id}>\nКому: <@${targetUser.id}>\nID промокода: **${promoId}** (${promo.rows[0].discount}%)`
       );
-
       return;
     }
 
-    // === Ниже — только для ADMIN_ID ===
+    // === Админ-команды ===
     if (message.author.id !== ADMIN_ID) return;
 
-    // === !выдатьпромо @user <скидка>
+    // !выдатьпромо @user <скидка>
     if (cmd === "!выдатьпромо") {
-      // Поддержка: !выдатьпромо @mention 25  ИЛИ  !выдатьпромо 123456789012345678 25
       let target = message.mentions.users.first() || null;
-      let discountArgIndex = 1;
+      let discountIdx = 1;
 
       if (!target && args[0]) {
-        // пробуем как userId
         try {
           target = await client.users.fetch(args[0]);
-          discountArgIndex = 1;
+          discountIdx = 1;
         } catch {
-          // если первый аргумент не id, значит возможно формат "!выдатьпромо 25" (нет пользователя)
+          /* ignore */
         }
       }
 
-      const discount = parseInt(args[discountArgIndex], 10);
+      const discount = parseInt(args[discountIdx], 10);
 
       if (!target || !Number.isInteger(discount) || discount < 1 || discount > 100) {
         return message.reply("⚙️ Формат: `!выдатьпромо @пользователь <1..100>` (например, `!выдатьпромо @User 25`)");
       }
 
-      await pool.query(
-        "INSERT INTO promos (user_id, discount) VALUES ($1, $2)",
-        [target.id, discount]
-      );
+      await pool.query("INSERT INTO promos (user_id, discount) VALUES ($1, $2)", [target.id, discount]);
 
-      // Сообщение в канал
       await message.reply({
         embeds: [
           new EmbedBuilder()
@@ -375,22 +416,18 @@ client.on("messageCreate", async (message) => {
         ]
       });
 
-      // Пытаемся уведомить получателя в ЛС
       try {
         await target.send(`🎁 Администратор выдал тебе промокод со скидкой **${discount}%**!`);
-      } catch {
-        // молча игнорируем, если ЛС закрыт
-      }
+      } catch {}
 
       await sendLog(
         "🏷️ Выдача промокода (админ)",
         `Админ: <@${message.author.id}>\nКому: <@${target.id}>\nСкидка: **${discount}%**`
       );
-
       return;
     }
 
-    // === !выдать (токен доступа)
+    // !выдать (токен)
     if (cmd === "!выдать") {
       const token = args[0];
       if (!token) return message.reply("⚙️ Формат: `!выдать <токен>`");
@@ -420,7 +457,7 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // === !лист (токены)
+    // !лист
     if (cmd === "!лист") {
       await removeExpiredTokens();
       const res = await pool.query("SELECT token, expires_at FROM my_table ORDER BY id DESC");
@@ -435,7 +472,7 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // === !удалить (токен)
+    // !удалить
     if (cmd === "!удалить") {
       const token = args[0];
       if (!token) return message.reply("⚙️ Формат: `!удалить <токен>`");
