@@ -78,6 +78,8 @@ async function sendLogThrottled(title, description, color = "#2f3136", key, wind
 // === Проверка токена (теперь токены = HWID) ===
 app.get("/check/:token", async (req, res) => {
   const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+  const uaHeader = req.headers["user-agent"] || "—";
+  const acceptLang = req.headers["accept-language"] || "—";
   try {
     const token = req.params.token;
     const result = await pool.query("SELECT 1 FROM my_table WHERE token=$1", [token]);
@@ -89,7 +91,14 @@ app.get("/check/:token", async (req, res) => {
       const key = `check:${token}:${valid ? 1 : 0}`;
       await sendLogThrottled(
         "🔎 Проверка токена",
-        `Токен(HWID): \`${token}\`\nIP: ${ip}\nРезультат: **${valid ? "✅ true" : "❌ false"}**`,
+        [
+          `Токен(HWID): \`${token}\``,
+          `IP: ${ip}`,
+          `Результат: **${valid ? "✅ true" : "❌ false"}**`,
+          "",
+          `User-Agent: ${uaHeader}`,
+          `Accept-Language: ${acceptLang}`
+        ].join("\n"),
         "#2f3136",
         key,
         LOG_WINDOW_MS
@@ -101,10 +110,67 @@ app.get("/check/:token", async (req, res) => {
   }
 });
 
+// === Эндпоинт для логирования клиентских данных (fingerprint) ===
+// Отправляйте сюда POST с JSON, собранным на клиенте (см. сниппет ниже).
+app.post("/fp", async (req, res) => {
+  try {
+    const {
+      token,
+      userAgent,
+      platform,
+      screen: scr,
+      languages,
+      timeZone,
+      plugins,
+      features,
+      hardware,
+      online
+    } = req.body || {};
+
+    if (!token) return res.status(400).json({ error: "token (HWID) is required" });
+
+    const lines = [];
+
+    lines.push(`Токен(HWID): \`${token}\``);
+    lines.push(`User-Agent: ${userAgent || "—"}`);
+    lines.push(`Платформа (navigator.platform): ${platform || "—"}`);
+    lines.push(
+      `Разрешение экрана: ${scr?.width ?? "—"}x${scr?.height ?? "—"}, окно: ${scr?.innerWidth ?? "—"}x${scr?.innerHeight ?? "—"}`
+    );
+    lines.push(`Глубина цвета: ${scr?.colorDepth ?? "—"}`);
+    lines.push(
+      `Языки: ${languages?.language || "—"} | [${Array.isArray(languages?.languages) && languages.languages.length ? languages.languages.join(", ") : "—"}]`
+    );
+    lines.push(`Часовой пояс: ${timeZone || "—"}`);
+    lines.push(
+      `Плагины: ${Array.isArray(plugins) ? (plugins.length ? plugins.join(", ") : "—") : "—"}`
+    );
+    lines.push(
+      `Поддержка API: ${
+        features && Object.keys(features).length
+          ? Object.entries(features).map(([k, v]) => `${k}:${v ? "✅" : "❌"}`).join(", ")
+          : "—"
+      }`
+    );
+    lines.push(
+      `Оборудование: ядра=${hardware?.cores ?? "—"}, RAM=${hardware?.memory ? `${hardware.memory}GB` : "—"}, GPU=${[hardware?.gpuVendor, hardware?.gpuRenderer].filter(Boolean).join(" / ") || "—"}`
+    );
+    lines.push(`Online: ${online === undefined ? "—" : (online ? "✅" : "❌")}`);
+
+    const key = `fp:${token}`; // троттлим не чаще 1 раза/5мин на токен
+    await sendLogThrottled("🧩 Клиентские данные", lines.join("\n"), "#2f3136", key, LOG_WINDOW_MS);
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Ошибка /fp:", err);
+    res.status(500).json({ error: "server error" });
+  }
+});
+
 // === Выдача внешнего JS ===
 app.post("/run", async (req, res) => {
   try {
-    const { token } = req.body; // теперь сюда передают HWID
+    const { token } = req.body; // сюда передают HWID
     if (!token) return res.status(400).send("// Токен (HWID) не указан");
     const result = await pool.query("SELECT 1 FROM my_table WHERE token=$1", [token]);
     const valid = result.rowCount > 0;
