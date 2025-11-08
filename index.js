@@ -52,6 +52,29 @@ app.use(cors());
 app.use(express.json());
 app.get("/", (req, res) => res.send("Bot is running..."));
 
+// === Анти-спам логов (in-memory) ===
+const LOG_WINDOW_MS = 5 * 60 * 1000; // 5 минут
+const lastLogAt = new Map(); // key -> timestamp(ms)
+
+/**
+ * Обёртка над sendLog c анти-спамом.
+ * Логируем только если прошло >= windowMs с последнего такого же события.
+ * key — идентификатор "одного и того же" события (например: токен + результат).
+ */
+async function sendLogThrottled(title, description, color = "#2f3136", key, windowMs = LOG_WINDOW_MS) {
+  try {
+    if (key) {
+      const now = Date.now();
+      const prev = lastLogAt.get(key) || 0;
+      if (now - prev < windowMs) return; // пропускаем дубликат в окне
+      lastLogAt.set(key, now);
+    }
+    await sendLog(title, description, color);
+  } catch (e) {
+    console.error("Ошибка sendLogThrottled:", e);
+  }
+}
+
 // === Проверка токена (теперь токены = HWID) ===
 app.get("/check/:token", async (req, res) => {
   const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
@@ -62,9 +85,14 @@ app.get("/check/:token", async (req, res) => {
     res.json({ valid });
 
     if (token !== "1") {
-      await sendLog(
+      // ключ без IP, чтобы не спамило при смене прокси/множественных адресах
+      const key = `check:${token}:${valid ? 1 : 0}`;
+      await sendLogThrottled(
         "🔎 Проверка токена",
-        `Токен(HWID): \`${token}\`\nIP: ${ip}\nРезультат: **${valid ? "✅ true" : "❌ false"}**`
+        `Токен(HWID): \`${token}\`\nIP: ${ip}\nРезультат: **${valid ? "✅ true" : "❌ false"}**`,
+        "#2f3136",
+        key,
+        LOG_WINDOW_MS
       );
     }
   } catch (err) {
