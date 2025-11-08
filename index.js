@@ -26,11 +26,8 @@ if (!BOT_TOKEN || !DATABASE_URL || !ADMIN_ID) {
 
 const fetch = global.fetch;
 
-// === Каталог товаров ===
-const CATALOG = {
-  pro:  { key: "pro",  name: "PRO",  price: 499, durationDays: 30, desc: "Полный доступ" },
-  beta: { key: "beta", name: "BETA", price: 199, durationDays: 30, desc: "Базовый доступ" }
-};
+// === Единственный продукт ===
+const PRODUCT = { key: "script", name: "СКРИПТ", price: 300, durationDays: 30, desc: "Доступ к скрипту" };
 
 // === Подключение PostgreSQL ===
 const pool = new Pool({
@@ -76,7 +73,7 @@ app.get("/check/:token", async (req, res) => {
   }
 });
 
-// === Основной JS для внешнего скрипта ===
+// === Основной JS (внешний скрипт) ===
 app.post("/run", async (req, res) => {
   try {
     const { token } = req.body;
@@ -162,6 +159,19 @@ async function initDB() {
     );
   `);
 
+  // HWID-ы пользователей
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS hwids (
+      id SERIAL PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      hwid TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS hwids_user_hwid_idx ON hwids(user_id, hwid);
+  `);
+
   console.log("✅ Таблицы проверены");
 }
 
@@ -182,13 +192,10 @@ function generateToken(len = 28) {
   for (let i = 0; i < len; i++) s += chars[Math.floor(Math.random() * chars.length)];
   return s;
 }
-
-function pricePreview(productKey, discountPct) {
-  const item = CATALOG[productKey];
-  if (!item) return "—";
-  const base = item.price;
+function pricePreview(discountPct) {
+  const base = PRODUCT.price;
   const final = Math.max(0, Math.round(base * (1 - (discountPct || 0) / 100)));
-  return `₴${base}  →  **₴${final}**  (${discountPct || 0}% скидка)`;
+  return `₽${base}  →  **₽${final}**  (${discountPct || 0}% скидка)`;
 }
 
 // === Рулетка (кнопочный визуал) ===
@@ -214,46 +221,34 @@ function buildWheelComponents(segments, activeIndex) {
   return rows;
 }
 
-// === Покупка: UI-компоненты ===
-function buildBuyComponents(session, promos) {
-  // селект товаров
-  const productSelect = new StringSelectMenuBuilder()
-    .setCustomId(`buy_product:${session.userId}:${session.id}`)
-    .setPlaceholder("Выбери тариф")
-    .addOptions(
-      ...Object.values(CATALOG).map((p) => ({
-        label: `${p.name} — ₴${p.price} / ${p.durationDays}д`,
-        description: p.desc,
-        value: p.key
-      }))
-    )
-    .setMinValues(1)
-    .setMaxValues(1);
-
-  // селект промо
+// === Покупка: UI-компоненты (только выбор промо) ===
+function buildBuyComponents(session, promos, locked) {
+  // locked = промокод уже выбран и сожжён → менять нельзя
   const promoOptions = [
     {
       label: "Без промокода",
-      description: "Покупка без скидки",
-      value: "none"
+      description: locked ? "Промокод уже выбран — изменить нельзя" : "Покупка без скидки",
+      value: "none",
+      default: !session.promoLocked && !session.promoId
     },
     ...promos.map((r) => ({
       label: `#${r.id} — ${r.discount}%`,
-      description: "Сгорит при покупке",
-      value: `promo_${r.id}`
+      description: "Выбор сожжёт промокод без возможности вернуть",
+      value: `promo_${r.id}`,
+      default: session.promoId === r.id
     }))
   ];
 
   const promoSelect = new StringSelectMenuBuilder()
     .setCustomId(`buy_promo:${session.userId}:${session.id}`)
-    .setPlaceholder("Выбери промокод (необязательно)")
+    .setPlaceholder(locked ? "Промокод применён" : "Выбери промокод (необязательно)")
     .addOptions(...promoOptions)
     .setMinValues(1)
-    .setMaxValues(1);
+    .setMaxValues(1)
+    .setDisabled(!!locked);
 
-  const row1 = new ActionRowBuilder().addComponents(productSelect);
-  const row2 = new ActionRowBuilder().addComponents(promoSelect);
-  const row3 = new ActionRowBuilder().addComponents(
+  const rowPromo = new ActionRowBuilder().addComponents(promoSelect);
+  const rowButtons = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`buy_confirm:${session.userId}:${session.id}`)
       .setLabel("🛒 Оформить")
@@ -264,41 +259,33 @@ function buildBuyComponents(session, promos) {
       .setStyle(ButtonStyle.Secondary)
   );
 
-  return [row1, row2, row3];
+  return [rowPromo, rowButtons];
 }
 
-function buildBuyEmbed(session, promos) {
-  const productPart = session.productKey
-    ? `**${CATALOG[session.productKey].name}** (${CATALOG[session.productKey].durationDays} дней)`
-    : "_не выбран_";
-
-  const promoPart = session.promoId
-    ? `#${session.promoId}`
-    : "Без промокода";
-
+function buildBuyEmbed(session) {
   const discountPct = session.promoDiscount || 0;
-  const preview = session.productKey ? pricePreview(session.productKey, discountPct) : "—";
+  const preview = pricePreview(discountPct);
 
   const embed = new EmbedBuilder()
     .setTitle("🛒 Оформление покупки")
     .setColor("#00c853")
     .setDescription(
-      "Выбери тариф и, при желании, промокод в выпадающих списках ниже.\n" +
-      "Затем нажми **«Оформить»**."
+      `Тариф: **${PRODUCT.name}** — ₽${PRODUCT.price} / ${PRODUCT.durationDays}д\n` +
+      `Описание: ${PRODUCT.desc}\n\n` +
+      `Выбери промокод ниже (при выборе он **сразу сгорает** и вернуть его нельзя), затем жми **«Оформить»**.`
     )
     .addFields(
-      { name: "Тариф", value: productPart, inline: true },
-      { name: "Промокод", value: promoPart, inline: true },
-      { name: "Предпросчёт", value: preview, inline: false }
+      { name: "Промокод", value: session.promoLocked ? `#${session.promoId} (${session.promoDiscount}%)` : (session.promoId ? `#${session.promoId} (${session.promoDiscount}%)` : "Без промокода"), inline: true },
+      { name: "Предпросчёт", value: preview, inline: true }
     )
-    .setFooter({ text: "Токен придёт тебе в ЛС после оплаты" })
+    .setFooter({ text: "После покупки введи: !add_hwid <HWID>" })
     .setTimestamp();
 
   return embed;
 }
 
-// === Сессии покупки (по сообщению) ===
-const buySessions = new Map(); // messageId -> { id, userId, productKey, promoId, promoDiscount }
+// === Сессии покупки ===
+const buySessions = new Map(); // messageId -> { id, userId, promoId, promoDiscount, promoLocked }
 
 // === Команды Discord ===
 client.on("messageCreate", async (message) => {
@@ -308,11 +295,10 @@ client.on("messageCreate", async (message) => {
   const cmd = args.shift()?.toLowerCase();
 
   try {
-    // === !промо — рулетка с визуалом
+    // === !промо — рулетка с визуалом и кулдауном
     if (cmd === "!промо") {
       const userId = message.author.id;
 
-      // Кулдаун 24ч (UPSERT-гейт)
       const gate = await pool.query(
         `
         INSERT INTO promo_cooldowns (user_id, last_spin_at)
@@ -338,7 +324,6 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // Рулетка
       const segments = ["—", "5%", "—", "10%", "—", "15%", "—", "20%", "—", "30%", "—", "60%"];
       const isWin = Math.random() < 0.10;
       const prizeList = [5, 10, 15, 20, 30, 60];
@@ -392,59 +377,98 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // === !купить — ПАНЕЛЬ ВЫБОРА (без ввода текста)
+    // === !купить — только выбор промокода (с мгновенным сгоранием при выборе)
     if (cmd === "!купить") {
       const userId = message.author.id;
 
-      // Получаем доступные промокоды
       const promosRes = await pool.query(
         "SELECT id, discount FROM promos WHERE user_id=$1 ORDER BY id ASC",
         [userId]
       );
-      const promos = promosRes.rows; // [{id, discount}]
+      const promos = promosRes.rows;
 
-      // Создаём сессию по сообщению
       const session = {
         id: Math.random().toString(36).slice(2, 10),
         userId,
-        productKey: null,
         promoId: null,
-        promoDiscount: 0
+        promoDiscount: 0,
+        promoLocked: false // станет true после выбора и сжигания промокода
       };
 
-      const embed = buildBuyEmbed(session, promos);
-      const components = buildBuyComponents(session, promos);
+      const embed = buildBuyEmbed(session);
+      const components = buildBuyComponents(session, promos, session.promoLocked);
 
       const msg = await message.reply({ embeds: [embed], components });
-
-      // запомним сессию по message.id
       buySessions.set(msg.id, session);
+      return;
+    }
+
+    // === !add_hwid <HWID> — добавление HWID после покупки
+    if (cmd === "!add_hwid") {
+      const userId = message.author.id;
+      const hwid = (args.join(" ") || "").trim();
+
+      if (!hwid) {
+        await message.reply("⚙️ Формат: `!add_hwid <HWID>` (вставь свой HWID строкой)");
+        return;
+      }
+      if (hwid.length > 100) {
+        await message.reply("⚠️ Слишком длинный HWID (максимум 100 символов).");
+        return;
+      }
+
+      // Проверяем, что пользователь что-то покупал (за последние 30 дней)
+      const haveOrder = await pool.query(
+        "SELECT 1 FROM orders WHERE user_id=$1 AND created_at >= NOW() - INTERVAL '30 days' LIMIT 1",
+        [userId]
+      );
+      if (haveOrder.rowCount === 0) {
+        await message.reply("🛒 Сначала оформи покупку `!купить`, затем добавь HWID.");
+        return;
+      }
+
+      try {
+        await pool.query(
+          "INSERT INTO hwids (user_id, hwid) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+          [userId, hwid]
+        );
+        await message.reply(`🔐 HWID добавлен и привязан к твоему доступу.\nТеперь в профиле будет отображаться **Есть доступ**.`);
+        await sendLog("🖥️ Добавлен HWID", `Пользователь: <@${userId}>\nHWID: \`${hwid}\``);
+      } catch (e) {
+        console.error(e);
+        await message.reply("⚠️ Ошибка при сохранении HWID.");
+      }
       return;
     }
 
     // === !профиль
     if (cmd === "!профиль") {
       const userId = message.author.id;
-      const res = await pool.query(
+
+      // Промокоды
+      const promoRes = await pool.query(
         "SELECT id, discount, created_at FROM promos WHERE user_id=$1 ORDER BY id ASC",
         [userId]
       );
-      const hasPromo = res.rowCount > 0;
 
-      // ⚠️ Проверка доступа здесь формальная (в my_table хранятся не userId)
-      const tokenCheck = await pool.query("SELECT 1 FROM my_table WHERE token=$1", [userId]);
-      const hasCheat = tokenCheck.rowCount > 0;
+      // HWID-ы (признак доступа)
+      const hwidsRes = await pool.query(
+        "SELECT hwid, created_at FROM hwids WHERE user_id=$1 ORDER BY id ASC",
+        [userId]
+      );
+      const hasAccess = hwidsRes.rowCount > 0;
 
-      const promoList = hasPromo
-        ? res.rows
-            .map(
-              (r) =>
-                `🔹 **#${r.id}** — ${r.discount}% (выдан ${new Date(
-                  r.created_at
-                ).toLocaleDateString("ru-RU")})`
-            )
+      const promoList = promoRes.rowCount
+        ? promoRes.rows
+            .map((r) => `🔹 **#${r.id}** — ${r.discount}% (выдан ${new Date(r.created_at).toLocaleDateString("ru-RU")})`)
             .join("\n")
         : "Промокоды пока отсутствуют 😔";
+
+      const hwidList = hwidsRes.rowCount
+        ? hwidsRes.rows
+            .map((r, i) => `• **HWID #${i + 1}**: \`${r.hwid}\` (добавлен ${new Date(r.created_at).toLocaleDateString("ru-RU")})`)
+            .join("\n")
+        : "Ещё не добавлен. После покупки введи: `!add_hwid <HWID>`";
 
       const embed = new EmbedBuilder()
         .setColor("#5865F2")
@@ -452,30 +476,27 @@ client.on("messageCreate", async (message) => {
         .setThumbnail(message.author.displayAvatarURL({ dynamic: true }))
         .setDescription(
           `**👤 Пользователь:** ${message.author.username}\n` +
-          `**💼 Наличие чита:** ${hasCheat ? "✅ Есть доступ" : "❌ Нет доступа"}`
+          `**💼 Наличие чита:** ${hasAccess ? "✅ Есть доступ" : "❌ Нет доступа"}`
         )
         .addFields(
-          { name: "🎟 Активные промокоды", value: promoList, inline: false },
+          { name: "🎟 Промокоды", value: promoList, inline: false },
+          { name: "🖥 HWID-привязка", value: hwidList, inline: false },
           {
-            name: "ℹ️ Возможности:",
+            name: "ℹ️ Команды",
             value:
-              "🎁 Передай промокод другу — `!передать <ID>`\n" +
               "🛒 Купить доступ — `!купить`\n" +
-              "📅 Рулетка — `!промо`",
+              "🎯 Рулетка — `!промо`\n" +
+              "🔐 Привязать HWID — `!add_hwid <HWID>`",
             inline: false
           }
         )
-        .setFooter({
-          text: "Система лояльности | Активен ежедневно",
-          iconURL: "https://cdn-icons-png.flaticon.com/512/854/854878.png"
-        })
         .setTimestamp();
 
       await message.reply({ embeds: [embed] });
       return;
     }
 
-    // === !передать
+    // === !передать (оставил как было)
     if (cmd === "!передать") {
       const targetUser = message.mentions.users.first();
       const promoId = parseInt(args[1], 10);
@@ -483,7 +504,6 @@ client.on("messageCreate", async (message) => {
       if (!targetUser || !promoId) {
         return message.reply("⚙️ Формат: `!передать @пользователь <ID промокода>`");
       }
-
       if (targetUser.id === message.author.id) {
         return message.reply("😅 Нельзя передавать промокод самому себе.");
       }
@@ -492,7 +512,6 @@ client.on("messageCreate", async (message) => {
         "SELECT id, discount FROM promos WHERE id=$1 AND user_id=$2",
         [promoId, message.author.id]
       );
-
       if (promo.rowCount === 0) {
         return message.reply("⚠️ У тебя нет промокода с таким ID.");
       }
@@ -507,8 +526,7 @@ client.on("messageCreate", async (message) => {
         await targetUser.send(
           `🎉 Тебе передали промокод **#${promoId} (${promo.rows[0].discount}% скидки)** от пользователя ${message.author.username}!`
         );
-      } catch { /* ignore */ }
-
+      } catch {}
       await sendLog(
         "🔄 Передача промокода",
         `От: <@${message.author.id}>\nКому: <@${targetUser.id}>\nID промокода: **${promoId}** (${promo.rows[0].discount}%)`
@@ -528,7 +546,7 @@ client.on("messageCreate", async (message) => {
         try {
           target = await client.users.fetch(args[0]);
           discountIdx = 1;
-        } catch { /* ignore */ }
+        } catch {}
       }
 
       const discount = parseInt(args[discountIdx], 10);
@@ -589,7 +607,7 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // !лист
+    // !лист (токены)
     if (cmd === "!лист") {
       await removeExpiredTokens();
       const res = await pool.query("SELECT token, expires_at FROM my_table ORDER BY id DESC");
@@ -604,7 +622,7 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // !удалить
+    // !удалить (токен)
     if (cmd === "!удалить") {
       const token = args[0];
       if (!token) return message.reply("⚙️ Формат: `!удалить <токен>`");
@@ -619,17 +637,15 @@ client.on("messageCreate", async (message) => {
   }
 });
 
-// === Обработка интеракций (селекты/кнопки для покупки) ===
+// === Обработка интеракций (селект/кнопки покупки) ===
 client.on("interactionCreate", async (interaction) => {
   try {
-    // работаем только с нашими кастом-id
     if (!interaction.isStringSelectMenu() && !interaction.isButton()) return;
 
     const [kind, who, sid] = interaction.customId.split(":");
     const messageId = interaction.message?.id;
     const session = buySessions.get(messageId);
 
-    // валидность сессии
     if (!session || session.id !== sid) {
       return interaction.reply({ content: "⚠️ Сессия устарела. Набери `!купить` ещё раз.", ephemeral: true });
     }
@@ -637,7 +653,7 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.reply({ content: "⛔ Эта панель не для тебя.", ephemeral: true });
     }
 
-    // подгрузим актуальные промо пользователя (для меню/проверок)
+    // актуальные промокоды (для отрисовки, но учти: при выборе мы будем сжигать)
     const promosRes = await pool.query(
       "SELECT id, discount FROM promos WHERE user_id=$1 ORDER BY id ASC",
       [session.userId]
@@ -647,39 +663,42 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.isStringSelectMenu()) {
       const value = interaction.values[0];
 
-      if (kind === "buy_product") {
-        // Выбран тариф
-        if (!CATALOG[value]) {
-          return interaction.reply({ content: "⚠️ Неизвестный тариф.", ephemeral: true });
+      if (kind === "buy_promo") {
+        if (session.promoLocked) {
+          return interaction.reply({ content: "🔒 Промокод уже выбран — изменить нельзя.", ephemeral: true });
         }
-        session.productKey = value;
 
-      } else if (kind === "buy_promo") {
         if (value === "none") {
           session.promoId = null;
           session.promoDiscount = 0;
-        } else {
-          const id = parseInt(value.replace("promo_", ""), 10);
-          const found = promos.find((p) => p.id === id);
-          if (!found) {
-            session.promoId = null;
-            session.promoDiscount = 0;
-            await interaction.reply({ content: "⚠️ Этот промокод недоступен.", ephemeral: true });
-          } else {
-            session.promoId = id;
-            session.promoDiscount = found.discount;
-          }
+          // без сжигания — просто обновим предпросчёт
+          const embed = buildBuyEmbed(session);
+          const components = buildBuyComponents(session, promos, session.promoLocked);
+          await interaction.update({ embeds: [embed], components });
+          return;
         }
-      }
 
-      // Обновляем панель с предпросчётом
-      const embed = buildBuyEmbed(session, promos);
-      const components = buildBuyComponents(session, promos);
-      await interaction.update({ embeds: [embed], components });
-      return;
+        // Пользователь выбрал конкретный промокод → СЖИГАЕМ СРАЗУ
+        const id = parseInt(value.replace("promo_", ""), 10);
+        const del = await pool.query(
+          "DELETE FROM promos WHERE id=$1 AND user_id=$2 RETURNING discount;",
+          [id, session.userId]
+        );
+        if (del.rowCount === 0) {
+          await interaction.reply({ content: "⚠️ Этот промокод недоступен (возможно, уже использован).", ephemeral: true });
+          return;
+        }
+        session.promoId = id;
+        session.promoDiscount = Math.min(100, Math.max(0, parseInt(del.rows[0].discount, 10) || 0));
+        session.promoLocked = true;
+
+        const embed = buildBuyEmbed(session);
+        const components = buildBuyComponents(session, [], /*locked*/ true); // меню промо блокируем
+        await interaction.update({ embeds: [embed], components });
+        return;
+      }
     }
 
-    // Кнопки
     if (interaction.isButton()) {
       if (kind === "buy_cancel") {
         buySessions.delete(messageId);
@@ -695,34 +714,13 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       if (kind === "buy_confirm") {
-        if (!session.productKey) {
-          return interaction.reply({ content: "❗ Сначала выбери тариф.", ephemeral: true });
-        }
-
-        // Финально сверим промо: если выбран — «заберём» (DELETE ... RETURNING)
-        let discount = 0;
-        let usedPromoId = null;
-        if (session.promoId) {
-          const del = await pool.query(
-            "DELETE FROM promos WHERE id=$1 AND user_id=$2 RETURNING discount;",
-            [session.promoId, session.userId]
-          );
-          if (del.rowCount > 0) {
-            discount = Math.min(100, Math.max(0, parseInt(del.rows[0].discount, 10) || 0));
-            usedPromoId = session.promoId;
-          } else {
-            // промо уже использован/передан — идём без скидки
-            discount = 0;
-            usedPromoId = null;
-          }
-        }
-
-        const item = CATALOG[session.productKey];
-        const base = item.price;
+        // Цена с учётом (возможно) сгоревшего промокода
+        const base = PRODUCT.price;
+        const discount = session.promoDiscount || 0;
         const final = Math.max(0, Math.round(base * (1 - discount / 100)));
-        const expiresAt = new Date(Date.now() + item.durationDays * 24 * 60 * 60 * 1000);
+        const expiresAt = new Date(Date.now() + PRODUCT.durationDays * 24 * 60 * 60 * 1000);
 
-        // Сгенерим токен и сохраним
+        // Генерация и сохранение токена
         let token = generateToken();
         for (let i = 0; i < 5; i++) {
           try {
@@ -734,16 +732,16 @@ client.on("interactionCreate", async (interaction) => {
           }
         }
 
-        // Зафиксируем заказ
+        // Заказ
         const ord = await pool.query(
           `INSERT INTO orders (user_id, product, base_price, discount, final_price, promo_id, token, expires_at)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
            RETURNING id;`,
-          [session.userId, item.name, base, discount, final, usedPromoId, token, expiresAt]
+          [session.userId, PRODUCT.name, base, discount, final, session.promoId, token, expiresAt]
         );
         const orderId = ord.rows[0].id;
 
-        // Выключим кнопки
+        // Отключим кнопки
         const components = interaction.message.components.map((row) => {
           row.components.forEach((c) => c.setDisabled(true));
           return row;
@@ -755,29 +753,29 @@ client.on("interactionCreate", async (interaction) => {
               .setTitle("🧾 Заказ оформлен")
               .setColor("#00c853")
               .addFields(
-                { name: "Товар", value: `${item.name} (${item.durationDays} дней)`, inline: true },
-                { name: "Цена", value: `₴${base}`, inline: true },
+                { name: "Товар", value: `${PRODUCT.name} (${PRODUCT.durationDays} дней)`, inline: true },
+                { name: "Цена", value: `₽${base}`, inline: true },
                 { name: "Скидка", value: `${discount}%`, inline: true },
-                { name: "К оплате", value: `**₴${final}**`, inline: true },
+                { name: "К оплате", value: `**₽${final}**`, inline: true },
                 { name: "ID заказа", value: `#${orderId}`, inline: true },
                 { name: "Действует до", value: expiresAt.toLocaleString("ru-RU"), inline: true }
               )
-              .setFooter({ text: "Токен отправлен в личные сообщения" })
+              .setFooter({ text: "Токен отправлен в ЛС. Затем введи: !add_hwid <HWID>" })
           ],
           components
         });
 
-        // Отправим токен в ЛС
+        // Отправим токен в ЛС + инструкция по HWID
         try {
           const user = await client.users.fetch(session.userId);
           await user.send(
-            `🔐 **Токен доступа (${item.name})**\n` +
+            `🔐 **Токен доступа (${PRODUCT.name})**\n` +
             `\`${token}\`\n` +
             `Действует до: **${expiresAt.toLocaleString("ru-RU")}**\n\n` +
-            `Используй этот токен в своём лаунчере/скрипте.`
+            `Теперь привяжи устройство командой:\n` +
+            `**!add_hwid <HWID>**`
           );
         } catch {
-          // если ЛС закрыт — сообщим публично
           await interaction.followUp({
             content: "⚠️ Не удалось отправить токен в ЛС. Открой личные сообщения и напиши мне — пришлю токен туда.",
             ephemeral: true
@@ -786,7 +784,7 @@ client.on("interactionCreate", async (interaction) => {
 
         await sendLog(
           "💳 Покупка",
-          `Пользователь: <@${session.userId}>\nТовар: **${item.name}**\nЦена: ₴${base}\nСкидка: ${discount}%\nИтого: **₴${final}**\nOrderID: #${orderId}`
+          `Пользователь: <@${session.userId}>\nТовар: **${PRODUCT.name}**\nЦена: ₽${base}\nСкидка: ${discount}%\nИтого: **₽${final}**\nOrderID: #${orderId}`
         );
 
         buySessions.delete(messageId);
