@@ -27,7 +27,7 @@ if (!BOT_TOKEN || !DATABASE_URL || !ADMIN_ID) {
 const fetch = global.fetch;
 
 // === Единственный продукт ===
-const PRODUCT = { key: "script", name: "СКРИПТ", price: 300, durationDays: 30, desc: "Доступ к скрипту" };
+const PRODUCT = { key: "script", name: "подписка", price: 300, durationDays: 30, desc: "Доступ к скрипту" };
 
 // === Подключение PostgreSQL ===
 const pool = new Pool({
@@ -479,7 +479,7 @@ client.on("messageCreate", async (message) => {
         .setThumbnail(message.author.displayAvatarURL({ dynamic: true }))
         .setDescription(
           `**👤 Пользователь:** ${message.author.username}\n` +
-          `**💼 Наличие чита:** ${hasAccess ? "✅ Есть доступ" : "❌ Нет доступа"}`
+          `**💼 Наличие подписки:** ${hasAccess ? "✅ есть" : "❌ нету"}`
         )
         .addFields(
           { name: "🎟 Промокоды", value: promoList, inline: false },
@@ -487,7 +487,7 @@ client.on("messageCreate", async (message) => {
           {
             name: "ℹ️ Команды",
             value:
-              "🛒 Купить доступ — `!купить`\n" +
+              "🛒 Купить — `!купить`\n" +
               "🎯 Рулетка — `!промо`\n" +
               "🔐 Привязать HWID — `!add_hwid <HWID>`",
             inline: false
