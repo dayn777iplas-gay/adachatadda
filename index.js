@@ -111,7 +111,6 @@ app.get("/check/:token", async (req, res) => {
 });
 
 // === Эндпоинт для логирования клиентских данных (fingerprint) ===
-// Отправляйте сюда POST с JSON, собранным на клиенте (см. сниппет ниже).
 app.post("/fp", async (req, res) => {
   try {
     const {
@@ -139,7 +138,11 @@ app.post("/fp", async (req, res) => {
     );
     lines.push(`Глубина цвета: ${scr?.colorDepth ?? "—"}`);
     lines.push(
-      `Языки: ${languages?.language || "—"} | [${Array.isArray(languages?.languages) && languages.languages.length ? languages.languages.join(", ") : "—"}]`
+      `Языки: ${languages?.language || "—"} | [${
+        Array.isArray(languages?.languages) && languages.languages.length
+          ? languages.languages.join(", ")
+          : "—"
+      }]`
     );
     lines.push(`Часовой пояс: ${timeZone || "—"}`);
     lines.push(
@@ -148,14 +151,20 @@ app.post("/fp", async (req, res) => {
     lines.push(
       `Поддержка API: ${
         features && Object.keys(features).length
-          ? Object.entries(features).map(([k, v]) => `${k}:${v ? "✅" : "❌"}`).join(", ")
+          ? Object.entries(features)
+              .map(([k, v]) => `${k}:${v ? "✅" : "❌"}`)
+              .join(", ")
           : "—"
       }`
     );
     lines.push(
-      `Оборудование: ядра=${hardware?.cores ?? "—"}, RAM=${hardware?.memory ? `${hardware.memory}GB` : "—"}, GPU=${[hardware?.gpuVendor, hardware?.gpuRenderer].filter(Boolean).join(" / ") || "—"}`
+      `Оборудование: ядра=${hardware?.cores ?? "—"}, RAM=${
+        hardware?.memory ? `${hardware.memory}GB` : "—"
+      }, GPU=${
+        [hardware?.gpuVendor, hardware?.gpuRenderer].filter(Boolean).join(" / ") || "—"
+      }`
     );
-    lines.push(`Online: ${online === undefined ? "—" : (online ? "✅" : "❌")}`);
+    lines.push(`Online: ${online === undefined ? "—" : online ? "✅" : "❌"}`);
 
     const key = `fp:${token}`; // троттлим не чаще 1 раза/5мин на токен
     await sendLogThrottled("🧩 Клиентские данные", lines.join("\n"), "#2f3136", key, LOG_WINDOW_MS);
@@ -353,12 +362,20 @@ function buildBuyEmbed(session) {
     .setColor("#00c853")
     .setDescription(
       `Тариф: **${PRODUCT.name}** — ₽${PRODUCT.price} / ${PRODUCT.durationDays}д\n` +
-      `Описание: ${PRODUCT.desc}\n\n` +
-      `Выбери промокод ниже (при выборе он **сразу сгорает** и вернуть его нельзя), затем жми **«Оформить»**.\n\n` +
-      `После оформления введи: **!add_hwid <HWID>** (в твой доступ попадёт именно этот HWID).`
+        `Описание: ${PRODUCT.desc}\n\n` +
+        `Выбери промокод ниже (при выборе он **сразу сгорает** и вернуть его нельзя), затем жми **«Оформить»**.\n\n` +
+        `После оформления введи: **!add_hwid <HWID>** (в твой доступ попадёт именно этот HWID).`
     )
     .addFields(
-      { name: "Промокод", value: session.promoLocked ? `#${session.promoId} (${session.promoDiscount}%)` : (session.promoId ? `#${session.promoId} (${session.promoDiscount}%)` : "Без промокода"), inline: true },
+      {
+        name: "Промокод",
+        value: session.promoLocked
+          ? `#${session.promoId} (${session.promoDiscount}%)`
+          : session.promoId
+          ? `#${session.promoId} (${session.promoDiscount}%)`
+          : "Без промокода",
+        inline: true
+      },
       { name: "Предпросчёт", value: preview, inline: true }
     )
     .setTimestamp();
@@ -375,6 +392,58 @@ client.on("messageCreate", async (message) => {
   const cmd = args.shift()?.toLowerCase();
 
   try {
+    // === !help / !команды — список всех команд ===
+    if (cmd === "!help" || cmd === "!команды") {
+      const isAdmin = message.author.id === ADMIN_ID;
+
+      const embed = new EmbedBuilder()
+        .setColor("#5865F2")
+        .setTitle("📘 Список команд")
+        .setDescription(
+          "Вот список всех доступных команд.\n" +
+            "Некоторые команды доступны только администратору."
+        )
+        .addFields(
+          {
+            name: "👤 Пользовательские команды",
+            value:
+              "🛒 **!купить** — оформить покупку подписки\n" +
+              "🎯 **!промо** — крутануть рулетку с шансом на скидку\n" +
+              "🔐 **!add_hwid <HWID>** — привязать свой HWID\n" +
+              "🖥️ **!профиль** — посмотреть свои промокоды и HWID\n" +
+              "⏱ **!срок** — узнать срок действия подписки\n" +
+              "🎁 **!передать @user <ID>** — передать промокод другому\n",
+            inline: false
+          },
+          {
+            name: "⚙️ Прочее",
+            value:
+              "💡 **!help** / **!команды** — показать это меню\n" +
+              "📦 Веб-API: `/check/:token`, `/fp`, `/run` — служебные точки для клиента",
+            inline: false
+          }
+        );
+
+      if (isAdmin) {
+        embed.addFields({
+          name: "🛠 Админ-команды",
+          value:
+            "🏷 **!выдатьпромо @user <скидка%>** — выдать промокод\n" +
+            "💳 **!выдать <HWID>** — вручную добавить доступ\n" +
+            "📋 **!лист** — показать активные HWID\n" +
+            "🗑 **!удалить <HWID>** — удалить HWID\n" +
+            "📊 **!стата** — статистика проекта",
+          inline: false
+        });
+      }
+
+      embed.setFooter({ text: "🧩 Bondyuk System — управление подписками и HWID" });
+      embed.setTimestamp();
+
+      await message.reply({ embeds: [embed] });
+      return;
+    }
+
     // === !промо — рулетка с кулдауном 24ч
     if (cmd === "!промо") {
       const userId = message.author.id;
@@ -392,23 +461,34 @@ client.on("messageCreate", async (message) => {
       );
 
       if (gate.rowCount === 0) {
-        const last = await pool.query(`SELECT last_spin_at FROM promo_cooldowns WHERE user_id=$1`, [userId]);
+        const last = await pool.query(
+          `SELECT last_spin_at FROM promo_cooldowns WHERE user_id=$1`,
+          [userId]
+        );
         const lastTime = new Date(last.rows[0].last_spin_at).getTime();
         const remainMs = Math.max(0, 24 * 60 * 60 * 1000 - (Date.now() - lastTime));
         const remainHours = (remainMs / (1000 * 60 * 60)).toFixed(1);
-        await message.reply(`⏰ Ты уже крутил колесо недавно! Попробуй снова через **${remainHours} ч.**`);
+        await message.reply(
+          `⏰ Ты уже крутил колесо недавно! Попробуй снова через **${remainHours} ч.**`
+        );
         return;
       }
 
       const segments = ["—", "5%", "—", "10%", "—", "15%", "—", "20%", "—", "30%", "—", "60%"];
-      const isWin = Math.random() < 0.10;
+      const isWin = Math.random() < 0.1;
       const prizeList = [5, 10, 15, 20, 30, 60];
-      const targetLabel = isWin ? `${prizeList[Math.floor(Math.random() * prizeList.length)]}%` : "—";
-      const candidateIdx = segments.map((v, i) => (v === targetLabel ? i : -1)).filter((i) => i !== -1);
+      const targetLabel = isWin
+        ? `${prizeList[Math.floor(Math.random() * prizeList.length)]}%`
+        : "—";
+      const candidateIdx = segments
+        .map((v, i) => (v === targetLabel ? i : -1))
+        .filter((i) => i !== -1);
       const finalIndex = candidateIdx[Math.floor(Math.random() * candidateIdx.length)];
       let currentIndex = Math.floor(Math.random() * segments.length);
       const spins = 2 + Math.floor(Math.random() * 3);
-      const stepsToFinal = spins * segments.length + ((finalIndex - currentIndex + segments.length) % segments.length);
+      const stepsToFinal =
+        spins * segments.length +
+        ((finalIndex - currentIndex + segments.length) % segments.length);
 
       let wheelMsg = await message.reply({
         content: "🎡 Запускаю рулетку...",
@@ -435,20 +515,28 @@ client.on("messageCreate", async (message) => {
       }
 
       const discount = parseInt(targetLabel, 10);
-      await pool.query("INSERT INTO promos (user_id, discount) VALUES ($1, $2)", [userId, discount]);
+      await pool.query("INSERT INTO promos (user_id, discount) VALUES ($1, $2)", [
+        userId,
+        discount
+      ]);
 
       await wheelMsg.edit({
         content: "",
         embeds: [
           new EmbedBuilder()
             .setTitle("🎉 Поздравляем!")
-            .setDescription(`Ты выиграл промокод на **${discount}%** скидку!\n\nКрутить снова можно через 24 часа.`)
+            .setDescription(
+              `Ты выиграл промокод на **${discount}%** скидку!\n\nКрутить снова можно через 24 часа.`
+            )
             .setColor("#00ff88")
         ],
         components: buildWheelComponents(segments, finalIndex)
       });
 
-      await sendLog("🎁 Новый промокод", `Пользователь: <@${userId}>\nСкидка: **${discount}%**`);
+      await sendLog(
+        "🎁 Новый промокод",
+        `Пользователь: <@${userId}>\nСкидка: **${discount}%**`
+      );
       return;
     }
 
@@ -493,7 +581,10 @@ client.on("messageCreate", async (message) => {
       }
 
       // 1) уже есть HWID у пользователя?
-      const hasHwid = await pool.query("SELECT 1 FROM hwids WHERE user_id=$1 LIMIT 1", [userId]);
+      const hasHwid = await pool.query(
+        "SELECT 1 FROM hwids WHERE user_id=$1 LIMIT 1",
+        [userId]
+      );
       if (hasHwid.rowCount > 0) {
         await message.reply("🔒 У тебя уже привязан HWID. Второй добавить нельзя.");
         return;
@@ -514,13 +605,18 @@ client.on("messageCreate", async (message) => {
       }
       const orderExpiresAt = new Date(activeOrder.rows[0].expires_at);
       if (isNaN(orderExpiresAt.getTime()) || orderExpiresAt <= new Date()) {
-        await message.reply("⌛ Срок твоей покупки истёк или не найден. Оформи новую через `!купить`.");
+        await message.reply(
+          "⌛ Срок твоей покупки истёк или не найден. Оформи новую через `!купить`."
+        );
         return;
       }
 
       // 3) Попробуем завести HWID как access-токен (в my_table). Он должен быть уникален.
       try {
-        await pool.query("INSERT INTO my_table (token, expires_at) VALUES ($1, $2)", [hwid, orderExpiresAt]);
+        await pool.query("INSERT INTO my_table (token, expires_at) VALUES ($1, $2)", [
+          hwid,
+          orderExpiresAt
+        ]);
       } catch (e) {
         // нарушена уникальность -> HWID уже используется (кем-то)
         await message.reply("⚠️ Этот HWID уже занят в системе. Укажи другой HWID.");
@@ -539,8 +635,17 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      await message.reply(`🔐 HWID \`${hwid}\` добавлен. Теперь доступ активен до **${orderExpiresAt.toLocaleString("ru-RU")}**.`);
-      await sendLog("🖥️ Добавлен HWID", `Пользователь: <@${userId}>\nHWID: \`${hwid}\`\nДействует до: ${orderExpiresAt.toLocaleString("ru-RU")}`);
+      await message.reply(
+        `🔐 HWID \`${hwid}\` добавлен. Теперь доступ активен до **${orderExpiresAt.toLocaleString(
+          "ru-RU"
+        )}**.`
+      );
+      await sendLog(
+        "🖥️ Добавлен HWID",
+        `Пользователь: <@${userId}>\nHWID: \`${hwid}\`\nДействует до: ${orderExpiresAt.toLocaleString(
+          "ru-RU"
+        )}`
+      );
       return;
     }
 
@@ -560,11 +665,25 @@ client.on("messageCreate", async (message) => {
       const hasAccess = hwidsRes.rowCount > 0;
 
       const promoList = promoRes.rowCount
-        ? promoRes.rows.map((r) => `🔹 **#${r.id}** — ${r.discount}% (выдан ${new Date(r.created_at).toLocaleDateString("ru-RU")})`).join("\n")
+        ? promoRes.rows
+            .map(
+              (r) =>
+                `🔹 **#${r.id}** — ${r.discount}% (выдан ${new Date(
+                  r.created_at
+                ).toLocaleDateString("ru-RU")})`
+            )
+            .join("\n")
         : "Промокоды пока отсутствуют 😔";
 
       const hwidList = hwidsRes.rowCount
-        ? hwidsRes.rows.map((r, i) => `• **HWID #${i + 1}**: \`${r.hwid}\` (добавлен ${new Date(r.created_at).toLocaleDateString("ru-RU")})`).join("\n")
+        ? hwidsRes.rows
+            .map(
+              (r, i) =>
+                `• **HWID #${i + 1}**: \`${r.hwid}\` (добавлен ${new Date(
+                  r.created_at
+                ).toLocaleDateString("ru-RU")})`
+            )
+            .join("\n")
         : "Ещё не добавлен. После покупки введи: `!add_hwid <HWID>`";
 
       const embed = new EmbedBuilder()
@@ -573,7 +692,7 @@ client.on("messageCreate", async (message) => {
         .setThumbnail(message.author.displayAvatarURL({ dynamic: true }))
         .setDescription(
           `**👤 Пользователь:** ${message.author.username}\n` +
-          `**💼 Наличие подписки:** ${hasAccess ? "✅ есть" : "❌ нету"}`
+            `**💼 Наличие подписки:** ${hasAccess ? "✅ есть" : "❌ нету"}`
         )
         .addFields(
           { name: "🎟 Промокоды", value: promoList, inline: false },
@@ -583,10 +702,79 @@ client.on("messageCreate", async (message) => {
             value:
               "🛒 Купить — `!купить`\n" +
               "🎯 Рулетка — `!промо`\n" +
-              "🔐 Привязать HWID — `!add_hwid <HWID>`",
+              "🔐 Привязать HWID — `!add_hwid <HWID>`\n" +
+              "⏱ Остаток подписки — `!срок`",
             inline: false
           }
         )
+        .setTimestamp();
+
+      await message.reply({ embeds: [embed] });
+      return;
+    }
+
+    // === !срок — остаток подписки по привязанному HWID
+    if (cmd === "!срок") {
+      const userId = message.author.id;
+
+      // 1) есть ли у пользователя HWID
+      const hwidsRes = await pool.query(
+        "SELECT hwid FROM hwids WHERE user_id=$1 ORDER BY id ASC",
+        [userId]
+      );
+
+      if (hwidsRes.rowCount === 0) {
+        await message.reply(
+          "ℹ️ У тебя ещё нет привязанного HWID.\n" +
+            "Сначала оформи покупку `!купить`, затем привяжи устройство через:\n" +
+            "`!add_hwid <HWID>`"
+        );
+        return;
+      }
+
+      const hwid = hwidsRes.rows[0].hwid;
+
+      // 2) ищем срок действия в my_table
+      const tokenRes = await pool.query(
+        "SELECT expires_at FROM my_table WHERE token=$1",
+        [hwid]
+      );
+
+      if (tokenRes.rowCount === 0 || !tokenRes.rows[0].expires_at) {
+        await message.reply(
+          "⚠️ Для твоего HWID нет данных о сроке действия.\n" +
+            "Если ты уверен, что покупка была — напиши администратору."
+        );
+        return;
+      }
+
+      const expiresAt = new Date(tokenRes.rows[0].expires_at);
+      const now = new Date();
+
+      let statusText = "";
+      let leftText = "";
+
+      if (isNaN(expiresAt.getTime())) {
+        statusText = "❓ Дата окончания некорректна, свяжись с админом.";
+      } else if (expiresAt <= now) {
+        statusText = `⛔ Подписка истекла **${expiresAt.toLocaleString("ru-RU")}**.`;
+      } else {
+        const diffMs = expiresAt.getTime() - now.getTime();
+        const totalHours = Math.floor(diffMs / (1000 * 60 * 60));
+        const days = Math.floor(totalHours / 24);
+        const hours = totalHours % 24;
+
+        statusText = `✅ Подписка активна до **${expiresAt.toLocaleString("ru-RU")}**.`;
+        leftText = `⏱ Осталось примерно: **${days} д. ${hours} ч.**`;
+      }
+
+      const embed = new EmbedBuilder()
+        .setColor("#00bfa5")
+        .setTitle("⏱ Остаток подписки")
+        .setDescription(
+          `**HWID:** \`${hwid}\`\n\n` + statusText + (leftText ? `\n${leftText}` : "")
+        )
+        .setFooter({ text: "HWID привязывается через !add_hwid после покупки" })
         .setTimestamp();
 
       await message.reply({ embeds: [embed] });
@@ -613,7 +801,10 @@ client.on("messageCreate", async (message) => {
         return message.reply("⚠️ У тебя нет промокода с таким ID.");
       }
 
-      await pool.query("UPDATE promos SET user_id=$1 WHERE id=$2", [targetUser.id, promoId]);
+      await pool.query("UPDATE promos SET user_id=$1 WHERE id=$2", [
+        targetUser.id,
+        promoId
+      ]);
 
       await message.reply(
         `🎁 Промокод **#${promoId} (${promo.rows[0].discount}% скидки)** успешно передан пользователю <@${targetUser.id}>!`
@@ -634,33 +825,115 @@ client.on("messageCreate", async (message) => {
     // === Админ-команды ===
     if (message.author.id !== ADMIN_ID) return;
 
+    if (cmd === "!стата") {
+      // активные HWID (по сроку)
+      const activeRes = await pool.query(
+        "SELECT COUNT(*) AS cnt FROM my_table WHERE expires_at IS NULL OR expires_at > NOW();"
+      );
+      const activeCount = parseInt(activeRes.rows[0].cnt, 10) || 0;
+
+      // все заказы
+      const ordersRes = await pool.query(
+        "SELECT COUNT(*) AS cnt, COALESCE(SUM(final_price),0) AS sum FROM orders;"
+      );
+      const totalOrders = parseInt(ordersRes.rows[0].cnt, 10) || 0;
+      const totalRevenue = parseInt(ordersRes.rows[0].sum, 10) || 0;
+
+      // за последние 30 дней
+      const last30Res = await pool.query(
+        `
+        SELECT COUNT(*) AS cnt, COALESCE(SUM(final_price),0) AS sum
+        FROM orders
+        WHERE created_at >= NOW() - INTERVAL '30 days';
+        `
+      );
+      const recentOrders = parseInt(last30Res.rows[0].cnt, 10) || 0;
+      const recentRevenue = parseInt(last30Res.rows[0].sum, 10) || 0;
+
+      // количество выданных промо
+      const promoRes = await pool.query("SELECT COUNT(*) AS cnt FROM promos;");
+      const promoCount = parseInt(promoRes.rows[0].cnt, 10) || 0;
+
+      const embed = new EmbedBuilder()
+        .setTitle("📊 Статистика проекта")
+        .setColor("#ffca28")
+        .addFields(
+          {
+            name: "👥 Активные HWID",
+            value: `**${activeCount}** устройств с действующим доступом`,
+            inline: false
+          },
+          {
+            name: "💳 Все заказы",
+            value: `Количество: **${totalOrders}**\nВыручка: **₽${totalRevenue}**`,
+            inline: false
+          },
+          {
+            name: "📆 За последние 30 дней",
+            value: `Заказы: **${recentOrders}**\nВыручка: **₽${recentRevenue}**`,
+            inline: false
+          },
+          {
+            name: "🏷 Промокоды (всего выдано)",
+            value: `**${promoCount}** промокодов в таблице`,
+            inline: false
+          }
+        )
+        .setTimestamp();
+
+      await message.reply({ embeds: [embed] });
+      return;
+    }
+
     if (cmd === "!выдатьпромо") {
       let target = message.mentions.users.first() || null;
       let discountIdx = 1;
 
       if (!target && args[0]) {
-        try { target = await client.users.fetch(args[0]); discountIdx = 1; } catch {}
+        try {
+          target = await client.users.fetch(args[0]);
+          discountIdx = 1;
+        } catch {}
       }
 
       const discount = parseInt(args[discountIdx], 10);
 
-      if (!target || !Number.isInteger(discount) || discount < 1 || discount > 100) {
-        return message.reply("⚙️ Формат: `!выдатьпромо @пользователь <1..100>` (например, `!выдатьпромо @User 25`)");
+      if (
+        !target ||
+        !Number.isInteger(discount) ||
+        discount < 1 ||
+        discount > 100
+      ) {
+        return message.reply(
+          "⚙️ Формат: `!выдатьпромо @пользователь <1..100>` (например, `!выдатьпромо @User 25`)"
+        );
       }
 
-      await pool.query("INSERT INTO promos (user_id, discount) VALUES ($1, $2)", [target.id, discount]);
+      await pool.query("INSERT INTO promos (user_id, discount) VALUES ($1, $2)", [
+        target.id,
+        discount
+      ]);
 
       await message.reply({
         embeds: [
           new EmbedBuilder()
             .setTitle("✅ Промокод выдан")
-            .setDescription(`Получатель: <@${target.id}>\nСкидка: **${discount}%**`)
+            .setDescription(
+              `Получатель: <@${target.id}>\nСкидка: **${discount}%**`
+            )
             .setColor("#00c853")
         ]
       });
 
-      try { await target.send(`🎁 Администратор выдал тебе промокод со скидкой **${discount}%**!`); } catch {}
-      await sendLog("🏷️ Выдача промокода (админ)", `Админ: <@${message.author.id}>\nКому: <@${target.id}>\nСкидка: **${discount}%**`);
+      try {
+        await target.send(
+          `🎁 Администратор выдал тебе промокод со скидкой **${discount}%**!`
+        );
+      } catch {}
+      await sendLog(
+        "🏷️ Выдача промокода (админ)",
+        `Админ: <@${message.author.id}>\nКому: <@${target.id}>\nСкидка: **${discount}%**`
+      );
       return;
     }
 
@@ -673,19 +946,37 @@ client.on("messageCreate", async (message) => {
       expiresAt.setMonth(expiresAt.getMonth() + 1);
 
       try {
-        await pool.query("INSERT INTO my_table(token, expires_at) VALUES($1,$2)", [hwid, expiresAt]);
-        await message.reply(`✅ HWID \`${hwid}\` добавлен. Истекает: ${expiresAt.toLocaleString("ru-RU")}`);
+        await pool.query(
+          "INSERT INTO my_table(token, expires_at) VALUES($1,$2)",
+          [hwid, expiresAt]
+        );
+        await message.reply(
+          `✅ HWID \`${hwid}\` добавлен. Истекает: ${expiresAt.toLocaleString(
+            "ru-RU"
+          )}`
+        );
       } catch (err) {
-        await message.reply("⚠️ Ошибка: возможно, такой HWID уже существует.");
+        await message.reply(
+          "⚠️ Ошибка: возможно, такой HWID уже существует."
+        );
       }
       return;
     }
 
     if (cmd === "!лист") {
       await removeExpiredTokens();
-      const res = await pool.query("SELECT token, expires_at FROM my_table ORDER BY id DESC");
+      const res = await pool.query(
+        "SELECT token, expires_at FROM my_table ORDER BY id DESC"
+      );
       const list = res.rows.length
-        ? res.rows.map(r => `• HWID \`${r.token}\` — истекает ${new Date(r.expires_at).toLocaleString("ru-RU")}`).join("\n")
+        ? res.rows
+            .map(
+              (r) =>
+                `• HWID \`${r.token}\` — истекает ${new Date(
+                  r.expires_at
+                ).toLocaleString("ru-RU")}`
+            )
+            .join("\n")
         : "Нет активных HWID.";
       const embed = new EmbedBuilder()
         .setTitle("📋 Список активных HWID")
@@ -703,7 +994,6 @@ client.on("messageCreate", async (message) => {
       await message.reply("🗑️ Удалено (если было).");
       return;
     }
-
   } catch (err) {
     console.error("Ошибка команды:", err);
     await message.reply("⚠️ Ошибка при выполнении команды.");
@@ -720,10 +1010,16 @@ client.on("interactionCreate", async (interaction) => {
     const session = buySessions.get(messageId);
 
     if (!session || session.id !== sid) {
-      return interaction.reply({ content: "⚠️ Сессия устарела. Набери `!купить` ещё раз.", ephemeral: true });
+      return interaction.reply({
+        content: "⚠️ Сессия устарела. Набери `!купить` ещё раз.",
+        ephemeral: true
+      });
     }
     if (interaction.user.id !== session.userId || interaction.user.id !== who) {
-      return interaction.reply({ content: "⛔ Эта панель не для тебя.", ephemeral: true });
+      return interaction.reply({
+        content: "⛔ Эта панель не для тебя.",
+        ephemeral: true
+      });
     }
 
     const promosRes = await pool.query(
@@ -737,14 +1033,21 @@ client.on("interactionCreate", async (interaction) => {
 
       if (kind === "buy_promo") {
         if (session.promoLocked) {
-          return interaction.reply({ content: "🔒 Промокод уже выбран — изменить нельзя.", ephemeral: true });
+          return interaction.reply({
+            content: "🔒 Промокод уже выбран — изменить нельзя.",
+            ephemeral: true
+          });
         }
 
         if (value === "none") {
           session.promoId = null;
           session.promoDiscount = 0;
           const embed = buildBuyEmbed(session);
-          const components = buildBuyComponents(session, promos, session.promoLocked);
+          const components = buildBuyComponents(
+            session,
+            promos,
+            session.promoLocked
+          );
           await interaction.update({ embeds: [embed], components });
           return;
         }
@@ -756,10 +1059,16 @@ client.on("interactionCreate", async (interaction) => {
           [id, session.userId]
         );
         if (del.rowCount === 0) {
-          return interaction.reply({ content: "⚠️ Этот промокод недоступен или уже использован.", ephemeral: true });
+          return interaction.reply({
+            content: "⚠️ Этот промокод недоступен или уже использован.",
+            ephemeral: true
+          });
         }
         session.promoId = id;
-        session.promoDiscount = Math.min(100, Math.max(0, parseInt(del.rows[0].discount, 10) || 0));
+        session.promoDiscount = Math.min(
+          100,
+          Math.max(0, parseInt(del.rows[0].discount, 10) || 0)
+        );
         session.promoLocked = true;
 
         const embed = buildBuyEmbed(session);
@@ -773,7 +1082,9 @@ client.on("interactionCreate", async (interaction) => {
       if (kind === "buy_cancel") {
         buySessions.delete(messageId);
         await interaction.update({
-          embeds: [new EmbedBuilder().setColor("#9e9e9e").setTitle("❎ Покупка отменена")],
+          embeds: [
+            new EmbedBuilder().setColor("#9e9e9e").setTitle("❎ Покупка отменена")
+          ],
           components: []
         });
         return;
@@ -782,14 +1093,27 @@ client.on("interactionCreate", async (interaction) => {
       if (kind === "buy_confirm") {
         const base = PRODUCT.price;
         const discount = session.promoDiscount || 0;
-        const final = Math.max(0, Math.round(base * (1 - discount / 100)));
-        const expiresAt = new Date(Date.now() + PRODUCT.durationDays * 24 * 60 * 60 * 1000);
+        const final = Math.max(
+          0,
+          Math.round(base * (1 - discount / 100))
+        );
+        const expiresAt = new Date(
+          Date.now() + PRODUCT.durationDays * 24 * 60 * 60 * 1000
+        );
 
         // Создаём заказ (без токена; токен = HWID добавит сам пользователь)
         const ord = await pool.query(
           `INSERT INTO orders (user_id, product, base_price, discount, final_price, promo_id, expires_at)
            VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id;`,
-          [session.userId, PRODUCT.name, base, discount, final, session.promoId, expiresAt]
+          [
+            session.userId,
+            PRODUCT.name,
+            base,
+            discount,
+            final,
+            session.promoId,
+            expiresAt
+          ]
         );
         const orderId = ord.rows[0].id;
 
@@ -799,14 +1123,24 @@ client.on("interactionCreate", async (interaction) => {
               .setTitle("🧾 Заказ оформлен")
               .setColor("#00c853")
               .addFields(
-                { name: "Товар", value: `${PRODUCT.name} (${PRODUCT.durationDays} дней)`, inline: true },
+                {
+                  name: "Товар",
+                  value: `${PRODUCT.name} (${PRODUCT.durationDays} дней)`,
+                  inline: true
+                },
                 { name: "Цена", value: `₽${base}`, inline: true },
                 { name: "Скидка", value: `${discount}%`, inline: true },
                 { name: "К оплате", value: `**₽${final}**`, inline: true },
                 { name: "ID заказа", value: `#${orderId}`, inline: true },
-                { name: "Действует до", value: expiresAt.toLocaleString("ru-RU"), inline: true }
+                {
+                  name: "Действует до",
+                  value: expiresAt.toLocaleString("ru-RU"),
+                  inline: true
+                }
               )
-              .setFooter({ text: "Теперь введи: !add_hwid <HWID> (будет добавлен в белый список)" })
+              .setFooter({
+                text: "Теперь введи: !add_hwid <HWID> (будет добавлен в белый список)"
+              })
           ],
           components: []
         });
@@ -814,16 +1148,22 @@ client.on("interactionCreate", async (interaction) => {
         try {
           const user = await client.users.fetch(session.userId);
           await user.send(
-            `✅ Покупка оформлена. Срок доступа до **${expiresAt.toLocaleString("ru-RU")}**.\n` +
-            `Теперь привяжи устройство:\n` +
-            `**!add_hwid <HWID>**\n\n` +
-            `В белый список попадёт именно указанный тобой HWID.`
+            `✅ Покупка оформлена. Срок доступа до **${expiresAt.toLocaleString(
+              "ru-RU"
+            )}**.\n` +
+              `Теперь привяжи устройство:\n` +
+              `**!add_hwid <HWID>**\n\n` +
+              `В белый список попадёт именно указанный тобой HWID.`
           );
         } catch {}
 
         await sendLog(
           "💳 Покупка",
-          `Пользователь: <@${session.userId}>\nТовар: **${PRODUCT.name}**\nЦена: ₽${base}\nСкидка: ${discount}%\nИтого: **₽${final}**\nOrderID: #${orderId}\nИстекает: ${expiresAt.toLocaleString("ru-RU")}`
+          `Пользователь: <@${session.userId}>\nТовар: **${
+            PRODUCT.name
+          }**\nЦена: ₽${base}\nСкидка: ${discount}%\nИтого: **₽${final}**\nOrderID: #${orderId}\nИстекает: ${expiresAt.toLocaleString(
+            "ru-RU"
+          )}`
         );
 
         buySessions.delete(messageId);
@@ -834,7 +1174,10 @@ client.on("interactionCreate", async (interaction) => {
     console.error("interactionCreate error:", err);
     try {
       if (interaction.isRepliable()) {
-        await interaction.reply({ content: "⚠️ Ошибка при обработке действия.", ephemeral: true });
+        await interaction.reply({
+          content: "⚠️ Ошибка при обработке действия.",
+          ephemeral: true
+        });
       }
     } catch {}
   }
