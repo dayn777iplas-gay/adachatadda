@@ -17,7 +17,8 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const DATABASE_URL = process.env.DATABASE_URL;
 const ADMIN_ID = process.env.ADMIN_ID;
 
-const LOG_WEBHOOK_URL = "https://discord.com/api/webhooks/1427826300495855697/MtqkHw-X8jm7l8kbIxeVJHvBNcIPufZtxssqd2-wyljCggs9lGi4SMZZivbSckSw7xTU";
+const LOG_WEBHOOK_URL =
+  "https://discord.com/api/webhooks/1427826300495855697/MtqkHw-X8jm7l8kbIxeVJHvBNcIPufZtxssqd2-wyljCggs9lGi4SMZZivbSckSw7xTU";
 
 if (!BOT_TOKEN || !DATABASE_URL || !ADMIN_ID) {
   console.error("❌ BOT_TOKEN, DATABASE_URL и ADMIN_ID обязательны!");
@@ -27,7 +28,13 @@ if (!BOT_TOKEN || !DATABASE_URL || !ADMIN_ID) {
 const fetch = global.fetch;
 
 // === Единственный продукт ===
-const PRODUCT = { key: "script", name: "подписка", price: 300, durationDays: 30, desc: "Доступ к скрипту" };
+const PRODUCT = {
+  key: "script",
+  name: "подписка",
+  price: 300,
+  durationDays: 30,
+  desc: "Доступ к скрипту"
+};
 
 // === Подключение PostgreSQL ===
 const pool = new Pool({
@@ -41,7 +48,9 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.DirectMessages,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildInvites
   ],
   partials: [Partials.Channel]
 });
@@ -56,12 +65,43 @@ app.get("/", (req, res) => res.send("Bot is running..."));
 const LOG_WINDOW_MS = 5 * 60 * 1000; // 5 минут
 const lastLogAt = new Map(); // key -> timestamp(ms)
 
+// === Виртуальная валюта и кейсы ===
+const COINS_PER_INVITE = 20; // сколько монет даём за приглашённого юзера
+const COINS_PER_PURCHASE = 100; // сколько монет за каждую покупку
+const CASE_PRICE = 50; // цена кейса в монетах
+
+// Укажи реальные ID ролей из твоего сервера:
+const CASE_ROLE_IDS = [
+  "1442923957279002635", // например, VIP
+  "1442925465818894437" // например, PREMIUM
+];
+
+// Пул наград кейса
+const CASE_REWARDS = [
+  { type: "nothing", label: "Ничего", weight: 40 },
+  { type: "coins", label: "10 монет", amount: 10, weight: 25 },
+  { type: "coins", label: "25 монет", amount: 25, weight: 15 },
+  { type: "promo", label: "Промокод 15%", discount: 15, weight: 8 },
+  { type: "promo", label: "Промокод 30%", discount: 30, weight: 6 },
+  { type: "role", label: "Роль #1", roleId: CASE_ROLE_IDS[0], weight: 4 },
+  { type: "role", label: "Роль #2", roleId: CASE_ROLE_IDS[1], weight: 2 }
+];
+
+// кэш инвайтов: guildId -> Map(code -> uses)
+const invitesCache = new Map();
+
 /**
  * Обёртка над sendLog c анти-спамом.
  * Логируем только если прошло >= windowMs с последнего такого же события.
  * key — идентификатор "одного и того же" события (например: токен + результат).
  */
-async function sendLogThrottled(title, description, color = "#2f3136", key, windowMs = LOG_WINDOW_MS) {
+async function sendLogThrottled(
+  title,
+  description,
+  color = "#2f3136",
+  key,
+  windowMs = LOG_WINDOW_MS
+) {
   try {
     if (key) {
       const now = Date.now();
@@ -82,7 +122,9 @@ app.get("/check/:token", async (req, res) => {
   const acceptLang = req.headers["accept-language"] || "—";
   try {
     const token = req.params.token;
-    const result = await pool.query("SELECT 1 FROM my_table WHERE token=$1", [token]);
+    const result = await pool.query("SELECT 1 FROM my_table WHERE token=$1", [
+      token
+    ]);
     const valid = result.rowCount > 0;
     res.json({ valid });
 
@@ -134,7 +176,9 @@ app.post("/fp", async (req, res) => {
     lines.push(`User-Agent: ${userAgent || "—"}`);
     lines.push(`Платформа (navigator.platform): ${platform || "—"}`);
     lines.push(
-      `Разрешение экрана: ${scr?.width ?? "—"}x${scr?.height ?? "—"}, окно: ${scr?.innerWidth ?? "—"}x${scr?.innerHeight ?? "—"}`
+      `Разрешение экрана: ${scr?.width ?? "—"}x${scr?.height ?? "—"}, окно: ${
+        scr?.innerWidth ?? "—"
+      }x${scr?.innerHeight ?? "—"}`
     );
     lines.push(`Глубина цвета: ${scr?.colorDepth ?? "—"}`);
     lines.push(
@@ -265,10 +309,19 @@ async function initDB() {
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
   `);
+
   // один HWID на пользователя
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS hwids_user_unique ON hwids(user_id);`);
   // (для истории) чтобы один и тот же HWID не добавляли в my_table дважды
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS my_table_token_unique ON my_table(token);`);
+
+  // баланс виртуальной валюты
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_balances (
+      user_id TEXT PRIMARY KEY,
+      balance INTEGER NOT NULL DEFAULT 0
+    );
+  `);
 
   console.log("✅ Таблицы проверены");
 }
@@ -276,10 +329,54 @@ async function initDB() {
 // === Очистка просроченных HWID-доступов ===
 async function removeExpiredTokens() {
   const now = new Date();
-  const res = await pool.query("DELETE FROM my_table WHERE expires_at <= $1 RETURNING token", [now]);
+  const res = await pool.query("DELETE FROM my_table WHERE expires_at <= $1 RETURNING token", [
+    now
+  ]);
   for (const row of res.rows) {
     await sendLog("🕒 Доступ по HWID истёк", `\`${row.token}\``);
   }
+}
+
+// === Баланс монет ===
+async function addCoins(userId, amount) {
+  if (!amount) return;
+  await pool.query(
+    `
+    INSERT INTO user_balances (user_id, balance)
+    VALUES ($1, $2)
+    ON CONFLICT (user_id) DO UPDATE
+      SET balance = user_balances.balance + EXCLUDED.balance
+    `,
+    [userId, amount]
+  );
+}
+
+async function getBalance(userId) {
+  const res = await pool.query("SELECT balance FROM user_balances WHERE user_id=$1", [userId]);
+  return res.rowCount ? res.rows[0].balance : 0;
+}
+
+async function setBalance(userId, amount) {
+  await pool.query(
+    `
+    INSERT INTO user_balances (user_id, balance)
+    VALUES ($1, $2)
+    ON CONFLICT (user_balances.user_id) DO UPDATE
+      SET balance = EXCLUDED.balance
+    `,
+    [userId, amount]
+  );
+}
+
+// === Рандом по весам (для кейсов) ===
+function weightedRandom(items) {
+  const total = items.reduce((sum, x) => sum + (x.weight || 1), 0);
+  let roll = Math.random() * total;
+  for (const item of items) {
+    roll -= item.weight || 1;
+    if (roll <= 0) return item;
+  }
+  return items[items.length - 1];
 }
 
 // === Утилиты ===
@@ -318,7 +415,9 @@ function buildBuyComponents(session, promos, locked) {
   const promoOptions = [
     {
       label: "Без промокода",
-      description: locked ? "Промокод уже применён — изменить нельзя" : "Покупка без скидки",
+      description: locked
+        ? "Промокод уже применён — изменить нельзя"
+        : "Покупка без скидки",
       value: "none",
       default: !session.promoLocked && !session.promoId
     },
@@ -409,6 +508,8 @@ client.on("messageCreate", async (message) => {
             value:
               "🛒 **!купить** — оформить покупку подписки\n" +
               "🎯 **!промо** — крутануть рулетку с шансом на скидку\n" +
+              "💰 **!баланс** — показать баланс монет\n" +
+              "📦 **!кейс** — открыть кейс за монеты\n" +
               "🔐 **!add_hwid <HWID>** — привязать свой HWID\n" +
               "🖥️ **!профиль** — посмотреть свои промокоды и HWID\n" +
               "⏱ **!срок** — узнать срок действия подписки\n" +
@@ -432,13 +533,105 @@ client.on("messageCreate", async (message) => {
             "💳 **!выдать <HWID>** — вручную добавить доступ\n" +
             "📋 **!лист** — показать активные HWID\n" +
             "🗑 **!удалить <HWID>** — удалить HWID\n" +
-            "📊 **!стата** — статистика проекта",
+            "📊 **!стата** — статистика проекта\n" +
+            "➕ **!выдатькоины @user <кол-во>** — выдать монеты\n",
           inline: false
         });
       }
 
       embed.setFooter({ text: "🧩 Bondyuk System — управление подписками и HWID" });
       embed.setTimestamp();
+
+      await message.reply({ embeds: [embed] });
+      return;
+    }
+
+    // === !баланс — показать баланс виртуальной валюты ===
+    if (cmd === "!баланс" || cmd === "!balance") {
+      const bal = await getBalance(message.author.id);
+
+      const embed = new EmbedBuilder()
+        .setColor("#ffd54f")
+        .setTitle("💰 Баланс монет")
+        .setDescription(`У тебя сейчас **${bal}** монет.`)
+        .setFooter({ text: "Монеты выдаются за покупки и приглашения друзей." })
+        .setTimestamp();
+
+      await message.reply({ embeds: [embed] });
+      return;
+    }
+
+    // === !кейс — открыть кейс за монеты ===
+    if (cmd === "!кейс") {
+      const userId = message.author.id;
+      const bal = await getBalance(userId);
+
+      if (bal < CASE_PRICE) {
+        await message.reply(
+          `📦 Кейс стоит **${CASE_PRICE}** монет, а у тебя только **${bal}**.\n` +
+            `Заработать монеты можно за приглашения и покупки.`
+        );
+        return;
+      }
+
+      // списываем цену кейса
+      await addCoins(userId, -CASE_PRICE);
+
+      // крутим награду
+      const reward = weightedRandom(CASE_REWARDS);
+      let text = `Ты открыл кейс за **${CASE_PRICE}** монет.\n\n`;
+
+      if (reward.type === "nothing") {
+        text += "😢 Ничего не выпало. Повезёт в следующий раз!";
+      } else if (reward.type === "coins") {
+        await addCoins(userId, reward.amount);
+        const newBal = await getBalance(userId);
+        text += `🪙 Выпало: **${reward.label}**.\n` + `Твой новый баланс: **${newBal}** монет.`;
+      } else if (reward.type === "promo") {
+        await pool.query("INSERT INTO promos (user_id, discount) VALUES ($1, $2)", [
+          userId,
+          reward.discount
+        ]);
+        const newBal = await getBalance(userId);
+        text +=
+          `🎁 Выпал **${reward.label}**.\n` +
+          `Промокод уже добавлен в твой профиль.\n` +
+          `Текущий баланс: **${newBal}** монет.`;
+      } else if (reward.type === "role") {
+        const guild = message.guild;
+        const member = message.member;
+        const roleId = reward.roleId;
+        let roleGiven = false;
+
+        if (guild && member && roleId) {
+          const role = guild.roles.cache.get(roleId);
+          if (role) {
+            try {
+              await member.roles.add(role);
+              roleGiven = true;
+            } catch {}
+          }
+        }
+
+        const newBal = await getBalance(userId);
+        if (roleGiven) {
+          text +=
+            `🏅 Выпала роль **${reward.label}**.\n` +
+            `Роль уже выдана.\n` +
+            `Баланс: **${newBal}** монет.`;
+        } else {
+          text +=
+            `🏅 Выпала роль **${reward.label}**, ` +
+            `но бот не смог выдать её (проверь права и ID роли).\n` +
+            `Баланс: **${newBal}** монет.`;
+        }
+      }
+
+      const embed = new EmbedBuilder()
+        .setColor("#ab47bc")
+        .setTitle("🎰 Открытие кейса")
+        .setDescription(text)
+        .setTimestamp();
 
       await message.reply({ embeds: [embed] });
       return;
@@ -455,7 +648,6 @@ client.on("messageCreate", async (message) => {
         ON CONFLICT (user_id) DO UPDATE
           SET last_spin_at = EXCLUDED.last_spin_at
         WHERE promo_cooldowns.last_spin_at <= NOW() - INTERVAL '24 hours'
-        RETURNING last_spin_at;
         `,
         [userId]
       );
@@ -581,10 +773,7 @@ client.on("messageCreate", async (message) => {
       }
 
       // 1) уже есть HWID у пользователя?
-      const hasHwid = await pool.query(
-        "SELECT 1 FROM hwids WHERE user_id=$1 LIMIT 1",
-        [userId]
-      );
+      const hasHwid = await pool.query("SELECT 1 FROM hwids WHERE user_id=$1 LIMIT 1", [userId]);
       if (hasHwid.rowCount > 0) {
         await message.reply("🔒 У тебя уже привязан HWID. Второй добавить нельзя.");
         return;
@@ -898,12 +1087,7 @@ client.on("messageCreate", async (message) => {
 
       const discount = parseInt(args[discountIdx], 10);
 
-      if (
-        !target ||
-        !Number.isInteger(discount) ||
-        discount < 1 ||
-        discount > 100
-      ) {
+      if (!target || !Number.isInteger(discount) || discount < 1 || discount > 100) {
         return message.reply(
           "⚙️ Формат: `!выдатьпромо @пользователь <1..100>` (например, `!выдатьпромо @User 25`)"
         );
@@ -918,9 +1102,7 @@ client.on("messageCreate", async (message) => {
         embeds: [
           new EmbedBuilder()
             .setTitle("✅ Промокод выдан")
-            .setDescription(
-              `Получатель: <@${target.id}>\nСкидка: **${discount}%**`
-            )
+            .setDescription(`Получатель: <@${target.id}>\nСкидка: **${discount}%**`)
             .setColor("#00c853")
         ]
       });
@@ -946,19 +1128,15 @@ client.on("messageCreate", async (message) => {
       expiresAt.setMonth(expiresAt.getMonth() + 1);
 
       try {
-        await pool.query(
-          "INSERT INTO my_table(token, expires_at) VALUES($1,$2)",
-          [hwid, expiresAt]
-        );
+        await pool.query("INSERT INTO my_table(token, expires_at) VALUES($1,$2)", [
+          hwid,
+          expiresAt
+        ]);
         await message.reply(
-          `✅ HWID \`${hwid}\` добавлен. Истекает: ${expiresAt.toLocaleString(
-            "ru-RU"
-          )}`
+          `✅ HWID \`${hwid}\` добавлен. Истекает: ${expiresAt.toLocaleString("ru-RU")}`
         );
       } catch (err) {
-        await message.reply(
-          "⚠️ Ошибка: возможно, такой HWID уже существует."
-        );
+        await message.reply("⚠️ Ошибка: возможно, такой HWID уже существует.");
       }
       return;
     }
@@ -994,9 +1172,91 @@ client.on("messageCreate", async (message) => {
       await message.reply("🗑️ Удалено (если было).");
       return;
     }
+
+    if (cmd === "!выдатькоины") {
+      const target = message.mentions.users.first();
+      const amount = parseInt(args[1] || args[0], 10);
+
+      if (!target || !Number.isInteger(amount)) {
+        return message.reply("⚙️ Формат: `!выдатькоины @пользователь <кол-во>`");
+      }
+
+      await addCoins(target.id, amount);
+      const bal = await getBalance(target.id);
+
+      await message.reply(
+        `✅ Пользователю <@${target.id}> начислено **${amount}** монет.\n` +
+          `Новый баланс: **${bal}**.`
+      );
+      return;
+    }
   } catch (err) {
     console.error("Ошибка команды:", err);
     await message.reply("⚠️ Ошибка при выполнении команды.");
+  }
+});
+
+// === Инвайты и монеты за приглашения ===
+async function cacheGuildInvites() {
+  try {
+    const guilds = await client.guilds.fetch();
+    for (const [guildId] of guilds) {
+      const guild = await client.guilds.fetch(guildId);
+      const invites = await guild.invites.fetch();
+      const map = new Map();
+      invites.forEach((inv) => map.set(inv.code, inv.uses || 0));
+      invitesCache.set(guild.id, map);
+    }
+    console.log("✅ Инвайты закешированы");
+  } catch (e) {
+    console.error("Ошибка cacheGuildInvites:", e);
+  }
+}
+
+client.on("inviteCreate", async (invite) => {
+  try {
+    const guild = invite.guild;
+    if (!guild) return;
+    let map = invitesCache.get(guild.id);
+    if (!map) map = new Map();
+    map.set(invite.code, invite.uses || 0);
+    invitesCache.set(guild.id, map);
+  } catch (e) {
+    console.error("inviteCreate error:", e);
+  }
+});
+
+client.on("guildMemberAdd", async (member) => {
+  try {
+    const guild = member.guild;
+    const prevInvites = invitesCache.get(guild.id) || new Map();
+
+    const newInvites = await guild.invites.fetch();
+    let usedInvite = null;
+
+    newInvites.forEach((inv) => {
+      const prev = prevInvites.get(inv.code) || 0;
+      if ((inv.uses || 0) > prev) {
+        usedInvite = inv;
+      }
+    });
+
+    const map = new Map();
+    newInvites.forEach((inv) => map.set(inv.code, inv.uses || 0));
+    invitesCache.set(guild.id, map);
+
+    if (!usedInvite || !usedInvite.inviter) return;
+
+    const inviter = usedInvite.inviter;
+    await addCoins(inviter.id, COINS_PER_INVITE);
+
+    try {
+      await inviter.send(
+        `👥 За приглашение **${member.user.tag}** тебе начислено **${COINS_PER_INVITE}** монет.`
+      );
+    } catch {}
+  } catch (e) {
+    console.error("guildMemberAdd error:", e);
   }
 });
 
@@ -1043,11 +1303,7 @@ client.on("interactionCreate", async (interaction) => {
           session.promoId = null;
           session.promoDiscount = 0;
           const embed = buildBuyEmbed(session);
-          const components = buildBuyComponents(
-            session,
-            promos,
-            session.promoLocked
-          );
+          const components = buildBuyComponents(session, promos, session.promoLocked);
           await interaction.update({ embeds: [embed], components });
           return;
         }
@@ -1082,9 +1338,7 @@ client.on("interactionCreate", async (interaction) => {
       if (kind === "buy_cancel") {
         buySessions.delete(messageId);
         await interaction.update({
-          embeds: [
-            new EmbedBuilder().setColor("#9e9e9e").setTitle("❎ Покупка отменена")
-          ],
+          embeds: [new EmbedBuilder().setColor("#9e9e9e").setTitle("❎ Покупка отменена")],
           components: []
         });
         return;
@@ -1093,27 +1347,21 @@ client.on("interactionCreate", async (interaction) => {
       if (kind === "buy_confirm") {
         const base = PRODUCT.price;
         const discount = session.promoDiscount || 0;
-        const final = Math.max(
-          0,
-          Math.round(base * (1 - discount / 100))
-        );
+        const final = Math.max(0, Math.round(base * (1 - discount / 100)));
         const expiresAt = new Date(
           Date.now() + PRODUCT.durationDays * 24 * 60 * 60 * 1000
         );
+
+        const coinsBonus = COINS_PER_PURCHASE;
+        if (coinsBonus > 0) {
+          await addCoins(session.userId, coinsBonus);
+        }
 
         // Создаём заказ (без токена; токен = HWID добавит сам пользователь)
         const ord = await pool.query(
           `INSERT INTO orders (user_id, product, base_price, discount, final_price, promo_id, expires_at)
            VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id;`,
-          [
-            session.userId,
-            PRODUCT.name,
-            base,
-            discount,
-            final,
-            session.promoId,
-            expiresAt
-          ]
+          [session.userId, PRODUCT.name, base, discount, final, session.promoId, expiresAt]
         );
         const orderId = ord.rows[0].id;
 
@@ -1136,6 +1384,11 @@ client.on("interactionCreate", async (interaction) => {
                   name: "Действует до",
                   value: expiresAt.toLocaleString("ru-RU"),
                   inline: true
+                },
+                {
+                  name: "Бонус монет",
+                  value: `${coinsBonus}`,
+                  inline: true
                 }
               )
               .setFooter({
@@ -1153,17 +1406,16 @@ client.on("interactionCreate", async (interaction) => {
             )}**.\n` +
               `Теперь привяжи устройство:\n` +
               `**!add_hwid <HWID>**\n\n` +
-              `В белый список попадёт именно указанный тобой HWID.`
+              `В белый список попадёт именно указанный тобой HWID.\n\n` +
+              `💰 За покупку тебе начислено **${coinsBonus}** монет.`
           );
         } catch {}
 
         await sendLog(
           "💳 Покупка",
-          `Пользователь: <@${session.userId}>\nТовар: **${
-            PRODUCT.name
-          }**\nЦена: ₽${base}\nСкидка: ${discount}%\nИтого: **₽${final}**\nOrderID: #${orderId}\nИстекает: ${expiresAt.toLocaleString(
+          `Пользователь: <@${session.userId}>\nТовар: **${PRODUCT.name}**\nЦена: ₽${base}\nСкидка: ${discount}%\nИтого: **₽${final}**\nOrderID: #${orderId}\nИстекает: ${expiresAt.toLocaleString(
             "ru-RU"
-          )}`
+          )}\nМонеты за покупку: ${coinsBonus}`
         );
 
         buySessions.delete(messageId);
@@ -1188,6 +1440,7 @@ client.once("ready", async () => {
   console.log(`🤖 Logged in as ${client.user.tag}`);
   await initDB();
   await removeExpiredTokens();
+  await cacheGuildInvites();
 });
 
 // === Самопинг (Render keep-alive) ===
