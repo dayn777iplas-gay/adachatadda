@@ -72,8 +72,8 @@ const CASE_PRICE = 50; // цена кейса в монетах
 
 // Укажи реальные ID ролей из твоего сервера:
 const CASE_ROLE_IDS = [
-  "000000000000000000", // например, VIP
-  "000000000000000001" // например, PREMIUM
+  "1442923957279002635", // например, VIP
+  "1442925465818894437" // например, PREMIUM
 ];
 
 // Пул наград кейса (включая "свою роль")
@@ -652,7 +652,7 @@ client.on("messageCreate", async (message) => {
           return;
         }
         // лимит, чтобы не улететь в рейты и спам
-        count = Math.min(parsed, 20);
+        count = Math.min(parsed, 100);
       }
 
       const totalCost = CASE_PRICE * count;
