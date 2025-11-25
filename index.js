@@ -72,23 +72,28 @@ const CASE_PRICE = 50; // цена кейса в монетах
 
 // Укажи реальные ID ролей из твоего сервера:
 const CASE_ROLE_IDS = [
-  "1442923957279002635", // например, VIP
-  "1442925465818894437" // например, PREMIUM
+  "000000000000000000", // например, VIP
+  "000000000000000001" // например, PREMIUM
 ];
 
-// Пул наград кейса
+// Пул наград кейса (включая "свою роль")
 const CASE_REWARDS = [
-  { type: "nothing", label: "Ничего", weight: 40 },
+  { type: "nothing", label: "Ничего", weight: 38 },
   { type: "coins", label: "10 монет", amount: 10, weight: 25 },
   { type: "coins", label: "25 монет", amount: 25, weight: 15 },
   { type: "promo", label: "Промокод 15%", discount: 15, weight: 8 },
   { type: "promo", label: "Промокод 30%", discount: 30, weight: 6 },
-  { type: "role", label: "Роль #1", roleId: CASE_ROLE_IDS[0], weight: 4 },
-  { type: "role", label: "Роль #2", roleId: CASE_ROLE_IDS[1], weight: 2 }
+  { type: "custom_role", label: "Своя роль", weight: 4 }, // кастомная роль
+  { type: "role", label: "Роль #1", roleId: CASE_ROLE_IDS[0], weight: 3 },
+  { type: "role", label: "Роль #2", roleId: CASE_ROLE_IDS[1], weight: 1 }
 ];
 
 // кэш инвайтов: guildId -> Map(code -> uses)
 const invitesCache = new Map();
+
+// ожидаем, что пользователь создаст свою роль после выигрыша в кейсе
+// ключ: `${guildId}:${userId}` -> { guildId }
+const customRoleSessions = new Map();
 
 /**
  * Обёртка над sendLog c анти-спамом.
@@ -122,9 +127,7 @@ app.get("/check/:token", async (req, res) => {
   const acceptLang = req.headers["accept-language"] || "—";
   try {
     const token = req.params.token;
-    const result = await pool.query("SELECT 1 FROM my_table WHERE token=$1", [
-      token
-    ]);
+    const result = await pool.query("SELECT 1 FROM my_table WHERE token=$1", [token]);
     const valid = result.rowCount > 0;
     res.json({ valid });
 
@@ -323,6 +326,15 @@ async function initDB() {
     );
   `);
 
+  // роли, полученные из кейсов (с указанием владельца)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS case_roles (
+      role_id TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
   console.log("✅ Таблицы проверены");
 }
 
@@ -361,7 +373,7 @@ async function setBalance(userId, amount) {
     `
     INSERT INTO user_balances (user_id, balance)
     VALUES ($1, $2)
-    ON CONFLICT (user_balances.user_id) DO UPDATE
+    ON CONFLICT (user_id) DO UPDATE
       SET balance = EXCLUDED.balance
     `,
     [userId, amount]
@@ -510,6 +522,8 @@ client.on("messageCreate", async (message) => {
               "🎯 **!промо** — крутануть рулетку с шансом на скидку\n" +
               "💰 **!баланс** — показать баланс монет\n" +
               "📦 **!кейс** — открыть кейс за монеты\n" +
+              "🎨 **!создатьроль <название>** — создать свою роль, если ты выбил её из кейса\n" +
+              "🔁 **!передатьроль @user @роль** — передать свою кейс-роль другому\n" +
               "🔐 **!add_hwid <HWID>** — привязать свой HWID\n" +
               "🖥️ **!профиль** — посмотреть свои промокоды и HWID\n" +
               "⏱ **!срок** — узнать срок действия подписки\n" +
@@ -539,7 +553,7 @@ client.on("messageCreate", async (message) => {
         });
       }
 
-      embed.setFooter({ text: "🧩 Bondyuk System — управление подписками и HWID" });
+      embed.setFooter({ text: "TamiNeg-bot создатель Bondyuk" });
       embed.setTimestamp();
 
       await message.reply({ embeds: [embed] });
@@ -586,7 +600,9 @@ client.on("messageCreate", async (message) => {
       } else if (reward.type === "coins") {
         await addCoins(userId, reward.amount);
         const newBal = await getBalance(userId);
-        text += `🪙 Выпало: **${reward.label}**.\n` + `Твой новый баланс: **${newBal}** монет.`;
+        text +=
+          `🪙 Выпало: **${reward.label}**.\n` +
+          `Твой новый баланс: **${newBal}** монет.`;
       } else if (reward.type === "promo") {
         await pool.query("INSERT INTO promos (user_id, discount) VALUES ($1, $2)", [
           userId,
@@ -597,6 +613,24 @@ client.on("messageCreate", async (message) => {
           `🎁 Выпал **${reward.label}**.\n` +
           `Промокод уже добавлен в твой профиль.\n` +
           `Текущий баланс: **${newBal}** монет.`;
+      } else if (reward.type === "custom_role") {
+        const guild = message.guild;
+        const member = message.member;
+        const newBal = await getBalance(userId);
+
+        if (!guild || !member) {
+          text +=
+            "🎨 Ты выиграл возможность создать свою роль, но команду нужно использовать **на сервере**, а не в ЛС.\n" +
+            `Баланс: **${newBal}** монет.`;
+        } else {
+          const key = `${guild.id}:${userId}`;
+          customRoleSessions.set(key, { guildId: guild.id });
+
+          text +=
+            "🎨 Ты выиграл возможность создать **свою роль**!\n" +
+            "Напиши в этом сервере: `!создатьроль <название>` (без @), и я создам её и выдам тебе.\n" +
+            `Баланс: **${newBal}** монет.`;
+        }
       } else if (reward.type === "role") {
         const guild = message.guild;
         const member = message.member;
@@ -1008,6 +1042,145 @@ client.on("messageCreate", async (message) => {
         "🔄 Передача промокода",
         `От: <@${message.author.id}>\nКому: <@${targetUser.id}>\nID промокода: **${promoId}** (${promo.rows[0].discount}%)`
       );
+      return;
+    }
+
+    // === !создатьроль <название> — создать свою кейс-роль после выигрыша в кейсе ===
+    if (cmd === "!создатьроль") {
+      const guild = message.guild;
+      if (!guild) {
+        await message.reply("Эту команду можно использовать только на сервере.");
+        return;
+      }
+
+      const key = `${guild.id}:${message.author.id}`;
+      const session = customRoleSessions.get(key);
+      if (!session) {
+        await message.reply(
+          "⛔ У тебя нет активного права на создание своей роли.\n" +
+            "Попробуй выбить его из кейса командой `!кейс`."
+        );
+        return;
+      }
+
+      const roleName = args.join(" ").trim();
+      if (!roleName) {
+        await message.reply("⚙️ Формат: `!создатьроль <название роли>`");
+        return;
+      }
+      if (roleName.length > 32) {
+        await message.reply("⚠️ Название роли слишком длинное (максимум 32 символа).");
+        return;
+      }
+      if (/@everyone|@here/.test(roleName)) {
+        await message.reply("⚠️ Такое название использовать нельзя.");
+        return;
+      }
+
+      try {
+        const role = await guild.roles.create({
+          name: roleName,
+          mentionable: true,
+          reason: `Кейс-роль для ${message.author.tag}`
+        });
+
+        const member = await guild.members.fetch(message.author.id);
+        await member.roles.add(role);
+
+        // сессию тратим
+        customRoleSessions.delete(key);
+
+        // сохраним владельца роли в БД — чтобы можно было передавать
+        await pool.query(
+          `
+          INSERT INTO case_roles (role_id, owner_id)
+          VALUES ($1, $2)
+          ON CONFLICT (role_id) DO UPDATE
+            SET owner_id = EXCLUDED.owner_id
+          `,
+          [role.id, message.author.id]
+        );
+
+        await message.reply(
+          `🎨 Роль **${role.name}** создана и выдана тебе!\n` +
+            `Ты можешь передать её другому с помощью команды:\n` +
+            "`!передатьроль @пользователь @роль`"
+        );
+      } catch (e) {
+        console.error("create custom role error:", e);
+        await message.reply(
+          "⚠️ Не удалось создать или выдать роль. Проверь, что у бота есть права `Управлять ролями`."
+        );
+      }
+      return;
+    }
+
+    // === !передатьроль @user @роль — передать свою кейс-роль другому человеку ===
+    if (cmd === "!передатьроль") {
+      const guild = message.guild;
+      if (!guild) {
+        await message.reply("Эту команду можно использовать только на сервере.");
+        return;
+      }
+
+      const targetUser = message.mentions.users.first();
+      const mentionedRoles = message.mentions.roles;
+      const role = mentionedRoles.first();
+
+      if (!targetUser || !role) {
+        await message.reply(
+          "⚙️ Формат: `!передатьроль @пользователь @роль`\n" +
+            "Роль нужно указать упоминанием (например, `!передатьроль @User @МояРоль`)."
+        );
+        return;
+      }
+
+      if (targetUser.id === message.author.id) {
+        await message.reply("😅 Нельзя передавать роль самому себе.");
+        return;
+      }
+
+      // проверяем, что это именно кейс-роль и что отправитель — её владелец
+      const res = await pool.query(
+        "SELECT owner_id FROM case_roles WHERE role_id=$1",
+        [role.id]
+      );
+
+      if (res.rowCount === 0) {
+        await message.reply(
+          "⛔ Эта роль не отмечена как кейс-роль. Передавать можно только роли, созданные через `!создатьроль`."
+        );
+        return;
+      }
+
+      if (res.rows[0].owner_id !== message.author.id) {
+        await message.reply("⛔ Ты не являешься владельцем этой роли.");
+        return;
+      }
+
+      try {
+        const fromMember = await guild.members.fetch(message.author.id);
+        const toMember = await guild.members.fetch(targetUser.id);
+
+        if (fromMember.roles.cache.has(role.id)) {
+          await fromMember.roles.remove(role);
+        }
+        await toMember.roles.add(role);
+
+        await pool.query("UPDATE case_roles SET owner_id=$1 WHERE role_id=$2", [
+          targetUser.id,
+          role.id
+        ]);
+
+        await message.reply(
+          `✅ Роль ${role} передана пользователю <@${targetUser.id}>.`
+        );
+      } catch (e) {
+        console.error("transfer role error:", e);
+        await message.reply(
+          "⚠️ Не удалось передать роль. Проверь, что у бота достаточно прав для управления ролями."
+        );
+      }
       return;
     }
 
