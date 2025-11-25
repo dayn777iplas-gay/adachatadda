@@ -92,7 +92,7 @@ const CASE_REWARDS = [
 const invitesCache = new Map();
 
 // ожидаем, что пользователь создаст свою роль после выигрыша в кейсе
-// ключ: `${guildId}:${userId}` -> { guildId }
+// ключ: `${guildId}:${userId}` -> { guildId, count }
 const customRoleSessions = new Map();
 
 /**
@@ -524,6 +524,7 @@ client.on("messageCreate", async (message) => {
               "📦 **!кейс** — открыть кейс за монеты\n" +
               "🎨 **!создатьроль <название>** — создать свою роль, если ты выбил её из кейса\n" +
               "🔁 **!передатьроль @user @роль** — передать свою кейс-роль другому\n" +
+              "🔁 **!перевод @user <кол-во>** — передать монеты другу\n" +
               "🔐 **!add_hwid <HWID>** — привязать свой HWID\n" +
               "🖥️ **!профиль** — посмотреть свои промокоды и HWID\n" +
               "⏱ **!срок** — узнать срок действия подписки\n" +
@@ -534,7 +535,7 @@ client.on("messageCreate", async (message) => {
             name: "⚙️ Прочее",
             value:
               "💡 **!help** / **!команды** — показать это меню\n" +
-              "📦 динахуй!",
+              "📦 динахуй",
             inline: false
           }
         );
@@ -560,6 +561,66 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
+    // === !перевод @user <кол-во> — передать монеты другому пользователю ===
+    if (cmd === "!перевод" || cmd === "!передатьмонеты") {
+      const senderId = message.author.id;
+      const targetUser = message.mentions.users.first();
+      const amountRaw = args[1]; // args[0] это @user, args[1] — число
+
+      if (!targetUser || !amountRaw) {
+        await message.reply(
+          "⚙️ Формат: `!перевод @пользователь <кол-во>`\n" +
+          "Пример: `!перевод @User 50`"
+        );
+        return;
+      }
+
+      if (targetUser.id === senderId) {
+        await message.reply("😅 Себе монеты переводить нельзя.");
+        return;
+      }
+
+      const amount = parseInt(amountRaw, 10);
+      if (!Number.isInteger(amount) || amount <= 0) {
+        await message.reply("⚠️ Сумма должна быть положительным целым числом.");
+        return;
+      }
+
+      const senderBalance = await getBalance(senderId);
+      if (senderBalance < amount) {
+        await message.reply(
+          `❌ Недостаточно монет. На балансе **${senderBalance}**, нужно **${amount}**.`
+        );
+        return;
+      }
+
+      // сначала списываем с отправителя
+      await addCoins(senderId, -amount);
+      // потом зачисляем получателю
+      await addCoins(targetUser.id, amount);
+
+      const newSenderBalance = await getBalance(senderId);
+
+      await message.reply(
+        `💸 Ты перевёл **${amount}** монет пользователю <@${targetUser.id}>.\n` +
+        `Твой новый баланс: **${newSenderBalance}** монет.`
+      );
+
+      // попробуем уведомить получателя в ЛС
+      try {
+        await targetUser.send(
+          `💰 Тебе перевели **${amount}** монет от пользователя ${message.author.tag}.`
+        );
+      } catch {}
+
+      await sendLog(
+        "💸 Перевод монет",
+        `От: <@${senderId}>\nКому: <@${targetUser.id}>\nСумма: **${amount}**`
+      );
+
+      return;
+    }
+
     // === !баланс — показать баланс виртуальной валюты ===
     if (cmd === "!баланс" || cmd === "!balance") {
       const bal = await getBalance(message.author.id);
@@ -575,96 +636,151 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // === !кейс — открыть кейс за монеты ===
+        // === !кейс [кол-во] — открыть один или несколько кейсов за монеты ===
     if (cmd === "!кейс") {
       const userId = message.author.id;
       const bal = await getBalance(userId);
 
-      if (bal < CASE_PRICE) {
+      // args[0] может быть числом: !кейс 5
+      const amountRaw = args[0];
+      let count = 1;
+
+      if (amountRaw) {
+        const parsed = parseInt(amountRaw, 10);
+        if (!Number.isInteger(parsed) || parsed <= 0) {
+          await message.reply("⚙️ Формат: `!кейс` или `!кейс <кол-во>` (например, `!кейс 5`).");
+          return;
+        }
+        // лимит, чтобы не улететь в рейты и спам
+        count = Math.min(parsed, 20);
+      }
+
+      const totalCost = CASE_PRICE * count;
+
+      if (bal < totalCost) {
         await message.reply(
-          `📦 Кейс стоит **${CASE_PRICE}** монет, а у тебя только **${bal}**.\n` +
-            `Заработать монеты можно за приглашения и покупки.`
+          `📦 Цена одного кейса: **${CASE_PRICE}** монет.\n` +
+            `Ты пытаешься открыть **${count}** шт. → нужно **${totalCost}** монет.\n` +
+            `У тебя на балансе только **${bal}**.`
         );
         return;
       }
 
-      // списываем цену кейса
-      await addCoins(userId, -CASE_PRICE);
+      // списываем общую стоимость
+      await addCoins(userId, -totalCost);
 
-      // крутим награду
-      const reward = weightedRandom(CASE_REWARDS);
-      let text = `Ты открыл кейс за **${CASE_PRICE}** монет.\n\n`;
+      const guild = message.guild;
+      const member = message.member;
 
-      if (reward.type === "nothing") {
-        text += "😢 Ничего не выпало. Повезёт в следующий раз!";
-      } else if (reward.type === "coins") {
-        await addCoins(userId, reward.amount);
-        const newBal = await getBalance(userId);
-        text +=
-          `🪙 Выпало: **${reward.label}**.\n` +
-          `Твой новый баланс: **${newBal}** монет.`;
-      } else if (reward.type === "promo") {
-        await pool.query("INSERT INTO promos (user_id, discount) VALUES ($1, $2)", [
-          userId,
-          reward.discount
-        ]);
-        const newBal = await getBalance(userId);
-        text +=
-          `🎁 Выпал **${reward.label}**.\n` +
-          `Промокод уже добавлен в твой профиль.\n` +
-          `Текущий баланс: **${newBal}** монет.`;
-      } else if (reward.type === "custom_role") {
-        const guild = message.guild;
-        const member = message.member;
-        const newBal = await getBalance(userId);
+      // счётчики результатов
+      let opened = 0;
+      let nothingCount = 0;
+      let coinsTotal = 0;
+      let coinsCases = 0;
+      const promoDiscounts = [];
+      let customRoleWins = 0;
+      const fixedRolesGiven = [];
+      const fixedRolesFailed = [];
 
-        if (!guild || !member) {
-          text +=
-            "🎨 Ты выиграл возможность создать свою роль, но команду нужно использовать **на сервере**, а не в ЛС.\n" +
-            `Баланс: **${newBal}** монет.`;
-        } else {
-          const key = `${guild.id}:${userId}`;
-          customRoleSessions.set(key, { guildId: guild.id });
+      for (let i = 0; i < count; i++) {
+        const reward = weightedRandom(CASE_REWARDS);
+        opened++;
 
-          text +=
-            "🎨 Ты выиграл возможность создать **свою роль**!\n" +
-            "Напиши в этом сервере: `!создатьроль <название>` (без @), и я создам её и выдам тебе.\n" +
-            `Баланс: **${newBal}** монет.`;
-        }
-      } else if (reward.type === "role") {
-        const guild = message.guild;
-        const member = message.member;
-        const roleId = reward.roleId;
-        let roleGiven = false;
-
-        if (guild && member && roleId) {
-          const role = guild.roles.cache.get(roleId);
-          if (role) {
-            try {
-              await member.roles.add(role);
-              roleGiven = true;
-            } catch {}
+        if (reward.type === "nothing") {
+          nothingCount++;
+        } else if (reward.type === "coins") {
+          coinsTotal += reward.amount;
+          coinsCases++;
+          await addCoins(userId, reward.amount);
+        } else if (reward.type === "promo") {
+          promoDiscounts.push(reward.discount);
+          await pool.query("INSERT INTO promos (user_id, discount) VALUES ($1, $2)", [
+            userId,
+            reward.discount
+          ]);
+        } else if (reward.type === "custom_role") {
+          customRoleWins++;
+          if (guild && member) {
+            const key = `${guild.id}:${userId}`;
+            const prev = customRoleSessions.get(key);
+            const prevCount = prev?.count || 0;
+            customRoleSessions.set(key, { guildId: guild.id, count: prevCount + 1 });
+          }
+        } else if (reward.type === "role") {
+          if (guild && member && reward.roleId) {
+            const role = guild.roles.cache.get(reward.roleId);
+            if (role) {
+              try {
+                await member.roles.add(role);
+                fixedRolesGiven.push(role.name);
+              } catch {
+                fixedRolesFailed.push(role.name);
+              }
+            } else {
+              fixedRolesFailed.push(`ID:${reward.roleId}`);
+            }
+          } else {
+            fixedRolesFailed.push(reward.label || `ID:${reward.roleId}`);
           }
         }
+      }
 
-        const newBal = await getBalance(userId);
-        if (roleGiven) {
-          text +=
-            `🏅 Выпала роль **${reward.label}**.\n` +
-            `Роль уже выдана.\n` +
-            `Баланс: **${newBal}** монет.`;
-        } else {
-          text +=
-            `🏅 Выпала роль **${reward.label}**, ` +
-            `но бот не смог выдать её (проверь права и ID роли).\n` +
-            `Баланс: **${newBal}** монет.`;
+      const newBal = await getBalance(userId);
+
+      // собираем красивый текст
+      let desc = `Ты открыл **${opened}** кейсов.\n` +
+                 `Потрачено: **${totalCost}** монет.\n` +
+                 `Текущий баланс: **${newBal}** монет.\n\n` +
+                 `📊 Результаты:\n`;
+
+      if (nothingCount > 0) {
+        desc += `• Пустых кейсов: **${nothingCount}**\n`;
+      }
+      if (coinsCases > 0) {
+        desc += `• Монеты: **+${coinsTotal}** (из ${coinsCases} кейсов)\n`;
+      }
+      if (promoDiscounts.length > 0) {
+        const map = {};
+        for (const d of promoDiscounts) {
+          map[d] = (map[d] || 0) + 1;
         }
+        const promoLines = Object.entries(map)
+          .map(([d, cnt]) => `  └ **${d}%** × ${cnt}`)
+          .join("\n");
+        desc += `• Промокоды:\n${promoLines}\n`;
+      }
+      if (customRoleWins > 0) {
+        desc +=
+          `• Право создать свою роль: **${customRoleWins}** раз(а).\n` +
+          "  └ Используй: `!создатьроль <название>` (можно несколько раз, пока есть попытки).\n";
+      }
+      if (fixedRolesGiven.length > 0) {
+        desc += `• Выданные фикс-роли: ${fixedRolesGiven
+          .map((n) => `\`${n}\``)
+          .join(", ")}\n`;
+      }
+      if (fixedRolesFailed.length > 0) {
+        desc +=
+          `• Роли, которые не удалось выдать: ${fixedRolesFailed
+            .map((n) => `\`${n}\``)
+            .join(", ")} (проверь права бота и ID)\n`;
+      }
+
+      if (
+        nothingCount === 0 &&
+        coinsCases === 0 &&
+        promoDiscounts.length === 0 &&
+        customRoleWins === 0 &&
+        fixedRolesGiven.length === 0 &&
+        fixedRolesFailed.length === 0
+      ) {
+        desc += "• (что-то пошло не так, ничего не выпало 🤔)";
       }
 
       const embed = new EmbedBuilder()
         .setColor("#ab47bc")
-        .setTitle("🎰 Открытие кейса")
-        .setDescription(text)
+        .setTitle("🎰 Открытие кейсов")
+        .setDescription(desc)
         .setTimestamp();
 
       await message.reply({ embeds: [embed] });
@@ -1088,7 +1204,15 @@ client.on("messageCreate", async (message) => {
         await member.roles.add(role);
 
         // сессию тратим
-        customRoleSessions.delete(key);
+                // тратим один "заряд" на создание роли
+        if (session.count && session.count > 1) {
+          customRoleSessions.set(key, {
+            guildId: session.guildId,
+            count: session.count - 1
+          });
+        } else {
+          customRoleSessions.delete(key);
+        }
 
         // сохраним владельца роли в БД — чтобы можно было передавать
         await pool.query(
