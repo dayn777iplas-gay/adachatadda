@@ -109,8 +109,6 @@ const customRoleSessions = new Map();
 
 /**
  * Обёртка над sendLog c анти-спамом.
- * Логируем только если прошло >= windowMs с последнего такого же события.
- * key — идентификатор "одного и того же" события (например: токен + результат).
  */
 async function sendLogThrottled(
   title,
@@ -147,7 +145,6 @@ app.get("/check/:token", async (req, res) => {
     res.json({ valid });
 
     if (token !== "1") {
-      // ключ без IP, чтобы не спамило при смене прокси/множественных адресах
       const key = `check:${token}:${valid ? 1 : 0}`;
       await sendLogThrottled(
         "🔎 Проверка токена",
@@ -228,7 +225,7 @@ app.post("/fp", async (req, res) => {
     );
     lines.push(`Online: ${online === undefined ? "—" : online ? "✅" : "❌"}`);
 
-    const key = `fp:${token}`; // троттлим не чаще 1 раза/5мин на токен
+    const key = `fp:${token}`;
     await sendLogThrottled("🧩 Клиентские данные", lines.join("\n"), "#2f3136", key, LOG_WINDOW_MS);
 
     res.json({ ok: true });
@@ -241,7 +238,7 @@ app.post("/fp", async (req, res) => {
 // === Выдача внешнего JS ===
 app.post("/run", async (req, res) => {
   try {
-    const { token } = req.body; // сюда передают HWID
+    const { token } = req.body;
     if (!token) return res.status(400).send("// Токен (HWID) не указан");
     const result = await pool.query(
       "SELECT 1 FROM my_table WHERE token = ?",
@@ -353,7 +350,6 @@ async function initDB() {
 async function removeExpiredTokens() {
   const now = new Date();
 
-  // сначала заберём токены, которые истекли
   const res = await pool.query(
     "SELECT token FROM my_table WHERE expires_at IS NOT NULL AND expires_at <= ?",
     [now]
@@ -363,7 +359,6 @@ async function removeExpiredTokens() {
     await sendLog("🕒 Доступ по HWID истёк", `\`${row.token}\``);
   }
 
-  // затем удалим их
   await pool.query(
     "DELETE FROM my_table WHERE expires_at IS NOT NULL AND expires_at <= ?",
     [now]
@@ -585,11 +580,11 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // === !перевод @user <кол-во> — передать монеты другому пользователю ===
+    // === !перевод @user <кол-во> — передача монет ===
     if (cmd === "!перевод" || cmd === "!передатьмонеты") {
       const senderId = message.author.id;
       const targetUser = message.mentions.users.first();
-      const amountRaw = args[1]; // args[0] это @user, args[1] — число
+      const amountRaw = args[1];
 
       if (!targetUser || !amountRaw) {
         await message.reply(
@@ -618,9 +613,7 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // сначала списываем с отправителя
       await addCoins(senderId, -amount);
-      // потом зачисляем получателю
       await addCoins(targetUser.id, amount);
 
       const newSenderBalance = await getBalance(senderId);
@@ -630,7 +623,6 @@ client.on("messageCreate", async (message) => {
           `Твой новый баланс: **${newSenderBalance}** монет.`
       );
 
-      // попробуем уведомить получателя в ЛС
       try {
         await targetUser.send(
           `💰 Тебе перевели **${amount}** монет от пользователя ${message.author.tag}.`
@@ -645,7 +637,7 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // === !баланс — показать баланс виртуальной валюты ===
+    // === !баланс ===
     if (cmd === "!баланс" || cmd === "!balance") {
       const bal = await getBalance(message.author.id);
 
@@ -660,12 +652,11 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // === !кейс [кол-во] — открыть один или несколько кейсов за монеты ===
+    // === !кейс [кол-во] ===
     if (cmd === "!кейс") {
       const userId = message.author.id;
       const bal = await getBalance(userId);
 
-      // args[0] может быть числом: !кейс 5
       const amountRaw = args[0];
       let count = 1;
 
@@ -675,7 +666,6 @@ client.on("messageCreate", async (message) => {
           await message.reply("⚙️ Формат: `!кейс` или `!кейс <кол-во>` (например, `!кейс 5`).");
           return;
         }
-        // лимит, чтобы не улететь в рейты и спам
         count = Math.min(parsed, 100);
       }
 
@@ -690,13 +680,11 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // списываем общую стоимость
       await addCoins(userId, -totalCost);
 
       const guild = message.guild;
       const member = message.member;
 
-      // счётчики результатов
       let opened = 0;
       let nothingCount = 0;
       let coinsTotal = 0;
@@ -751,7 +739,6 @@ client.on("messageCreate", async (message) => {
 
       const newBal = await getBalance(userId);
 
-      // собираем красивый текст
       let desc =
         `Ты открыл **${opened}** кейсов.\n` +
         `Потрачено: **${totalCost}** монет.\n` +
@@ -812,11 +799,10 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // === !промо — рулетка с кулдауном 24ч (MySQL-версия кулдауна) ===
+    // === !промо — рулетка с кулдауном 24ч (MySQL) ===
     if (cmd === "!промо") {
       const userId = message.author.id;
 
-      // проверяем кулдаун
       const lastRes = await pool.query(
         "SELECT last_spin_at FROM promo_cooldowns WHERE user_id = ?",
         [userId]
@@ -836,7 +822,6 @@ client.on("messageCreate", async (message) => {
         }
       }
 
-      // обновляем/создаём запись кулдауна
       await pool.query(
         `
         INSERT INTO promo_cooldowns (user_id, last_spin_at)
@@ -913,7 +898,7 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // === !купить — выбор/сжигание промокода, без ввода товара ===
+    // === !купить ===
     if (cmd === "!купить") {
       const userId = message.author.id;
 
@@ -939,7 +924,7 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // === !add_hwid <HWID> — пользователь добавляет СВОЙ единственный HWID ===
+    // === !add_hwid <HWID> ===
     if (cmd === "!add_hwid") {
       const userId = message.author.id;
       const hwid = (args.join(" ") || "").trim();
@@ -953,7 +938,6 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // 1) уже есть HWID у пользователя?
       const hasHwid = await pool.query(
         "SELECT 1 FROM hwids WHERE user_id = ? LIMIT 1",
         [userId]
@@ -963,7 +947,6 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // 2) проверим наличие актуального заказа
       const activeOrder = await pool.query(
         `SELECT expires_at
          FROM orders
@@ -984,25 +967,21 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // 3) Попробуем завести HWID как access-токен (в my_table). Он должен быть уникален.
       try {
         await pool.query(
           "INSERT INTO my_table (token, expires_at) VALUES (?, ?)",
           [hwid, orderExpiresAt]
         );
       } catch (e) {
-        // нарушена уникальность -> HWID уже используется (кем-то)
         await message.reply("⚠️ Этот HWID уже занят в системе. Укажи другой HWID.");
         return;
       }
 
-      // 4) Сохраним привязку пользователя -> HWID (ровно один)
       const ins = await pool.query(
         "INSERT IGNORE INTO hwids (user_id, hwid) VALUES (?, ?)",
         [userId, hwid]
       );
       if (ins.rowCount === 0) {
-        // кто-то успел привязать в гонке — откатим вставку в my_table
         await pool.query("DELETE FROM my_table WHERE token = ?", [hwid]);
         await message.reply("🔒 У тебя уже есть привязанный HWID.");
         return;
@@ -1022,7 +1001,7 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // === !профиль — доступ = есть ли привязанный HWID
+    // === !профиль ===
     if (cmd === "!профиль") {
       const userId = message.author.id;
 
@@ -1038,13 +1017,11 @@ client.on("messageCreate", async (message) => {
 
       const hasAccess = hwidsRes.rowCount > 0;
 
-      // --- Красивое сгруппированное отображение промокодов ---
       let promoList;
 
       if (promoRes.rowCount === 0) {
         promoList = "Промокоды пока отсутствуют 😔";
       } else {
-        // группируем по скидке: discount -> { count, exampleId }
         const groups = new Map();
 
         for (const r of promoRes.rows) {
@@ -1054,10 +1031,9 @@ client.on("messageCreate", async (message) => {
           }
           const g = groups.get(key);
           g.count += 1;
-          if (r.id < g.exampleId) g.exampleId = r.id; // самый маленький ID как "пример"
+          if (r.id < g.exampleId) g.exampleId = r.id;
         }
 
-        // сортируем по скидке (по убыванию)
         const sorted = Array.from(groups.entries()).sort((a, b) => b[0] - a[0]);
 
         const lines = sorted.map(([discount, g]) => {
@@ -1067,7 +1043,6 @@ client.on("messageCreate", async (message) => {
 
         let text = lines.join("\n");
 
-        // на всякий случай режем, если вдруг поле > 1024 символов
         const MAX_FIELD = 1024;
         if (text.length > MAX_FIELD) {
           let acc = "";
@@ -1076,7 +1051,7 @@ client.on("messageCreate", async (message) => {
 
           for (const [idx, [discount, g]] of sorted.entries()) {
             const line = `🔹 **#${g.exampleId}** — ${discount}% (у вас ${g.count} шт)`;
-            if ((acc + (acc ? "\n" : "") + line).length > MAX_FIELD - 40) break; // чуть запас
+            if ((acc + (acc ? "\n" : "") + line).length > MAX_FIELD - 40) break;
 
             acc += (acc ? "\n" : "") + line;
             usedGroups++;
@@ -1097,7 +1072,6 @@ client.on("messageCreate", async (message) => {
         promoList = text;
       }
 
-      // --- HWID-часть ---
       const hwidList = hwidsRes.rowCount
         ? hwidsRes.rows
             .map(
@@ -1136,11 +1110,10 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // === !срок — остаток подписки по привязанному HWID
+    // === !срок ===
     if (cmd === "!срок") {
       const userId = message.author.id;
 
-      // 1) есть ли у пользователя HWID
       const hwidsRes = await pool.query(
         "SELECT hwid FROM hwids WHERE user_id = ? ORDER BY id ASC",
         [userId]
@@ -1157,7 +1130,6 @@ client.on("messageCreate", async (message) => {
 
       const hwid = hwidsRes.rows[0].hwid;
 
-      // 2) ищем срок действия в my_table
       const tokenRes = await pool.query(
         "SELECT expires_at FROM my_table WHERE token = ?",
         [hwid]
@@ -1204,7 +1176,7 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // === !передать (промокод)
+    // === !передать (промокод) ===
     if (cmd === "!передать") {
       const targetUser = message.mentions.users.first();
       const promoId = parseInt(args[1], 10);
@@ -1245,7 +1217,7 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // === !создатьроль <название> — создать свою кейс-роль после выигрыша в кейсе ===
+    // === !создатьроль <название> ===
     if (cmd === "!создатьроль") {
       const guild = message.guild;
       if (!guild) {
@@ -1287,7 +1259,6 @@ client.on("messageCreate", async (message) => {
         const member = await guild.members.fetch(message.author.id);
         await member.roles.add(role);
 
-        // тратим один "заряд" на создание роли
         if (session.count && session.count > 1) {
           customRoleSessions.set(key, {
             guildId: session.guildId,
@@ -1297,7 +1268,6 @@ client.on("messageCreate", async (message) => {
           customRoleSessions.delete(key);
         }
 
-        // сохраним владельца роли в БД — чтобы можно было передавать
         await pool.query(
           `
           INSERT INTO case_roles (role_id, owner_id)
@@ -1322,7 +1292,7 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // === !передатьроль @user @роль — передать свою кейс-роль другому человеку ===
+    // === !передатьроль @user @роль ===
     if (cmd === "!передатьроль") {
       const guild = message.guild;
       if (!guild) {
@@ -1347,7 +1317,6 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // проверяем, что это именно кейс-роль и что отправитель — её владелец
       const res = await pool.query(
         "SELECT owner_id FROM case_roles WHERE role_id = ?",
         [role.id]
@@ -1395,20 +1364,17 @@ client.on("messageCreate", async (message) => {
     if (message.author.id !== ADMIN_ID) return;
 
     if (cmd === "!стата") {
-      // активные HWID (по сроку)
       const activeRes = await pool.query(
         "SELECT COUNT(*) AS cnt FROM my_table WHERE expires_at IS NULL OR expires_at > NOW()"
       );
       const activeCount = parseInt(activeRes.rows[0].cnt, 10) || 0;
 
-      // все заказы
       const ordersRes = await pool.query(
         "SELECT COUNT(*) AS cnt, COALESCE(SUM(final_price),0) AS sum FROM orders"
       );
       const totalOrders = parseInt(ordersRes.rows[0].cnt, 10) || 0;
       const totalRevenue = parseInt(ordersRes.rows[0].sum, 10) || 0;
 
-      // за последние 30 дней
       const last30Res = await pool.query(
         `
         SELECT COUNT(*) AS cnt, COALESCE(SUM(final_price),0) AS sum
@@ -1419,7 +1385,6 @@ client.on("messageCreate", async (message) => {
       const recentOrders = parseInt(last30Res.rows[0].cnt, 10) || 0;
       const recentRevenue = parseInt(last30Res.rows[0].sum, 10) || 0;
 
-      // количество выданных промо
       const promoRes = await pool.query("SELECT COUNT(*) AS cnt FROM promos");
       const promoCount = parseInt(promoRes.rows[0].cnt, 10) || 0;
 
@@ -1500,7 +1465,6 @@ client.on("messageCreate", async (message) => {
     }
 
     if (cmd === "!выдать") {
-      // админ вручную добавляет HWID в белый список (например, когда выдали доступ руками)
       const hwid = args[0];
       if (!hwid) return message.reply("⚙️ Формат: `!выдать <HWID>`");
 
@@ -1688,7 +1652,6 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        // Сжигаем промокод сразу (MySQL: сначала SELECT, потом DELETE)
         const id = parseInt(value.replace("promo_", ""), 10);
 
         const promoRes = await pool.query(
@@ -1715,7 +1678,7 @@ client.on("interactionCreate", async (interaction) => {
         session.promoLocked = true;
 
         const embed = buildBuyEmbed(session);
-        const components = buildBuyComponents(session, [], true); // меню промо блокируем
+        const components = buildBuyComponents(session, [], true);
         await interaction.update({ embeds: [embed], components });
         return;
       }
@@ -1744,7 +1707,6 @@ client.on("interactionCreate", async (interaction) => {
           await addCoins(session.userId, coinsBonus);
         }
 
-        // Создаём заказ (MySQL: без RETURNING, берём insertId)
         const ord = await pool.query(
           `
           INSERT INTO orders (user_id, product, base_price, discount, final_price, promo_id, expires_at)
