@@ -8,7 +8,7 @@ import {
   ButtonStyle,
   StringSelectMenuBuilder
 } from "discord.js";
-import { Pool } from "pg";
+import mysql from 'mysql2/promise';
 import express from "express";
 import cors from "cors";
 
@@ -37,7 +37,7 @@ const PRODUCT = {
 };
 
 // === Подключение PostgreSQL ===
-const pool = new Pool({
+const pool = mysql.createPool(DATABASE_URL);
   connectionString: DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
