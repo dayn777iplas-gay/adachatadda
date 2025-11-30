@@ -38,8 +38,8 @@ const PRODUCT = {
 
 // === Подключение PostgreSQL ===
 const pool = mysql.createPool(DATABASE_URL);
-  connectionString: DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  connectionString: DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
 });
 
 // === Discord клиент ===
