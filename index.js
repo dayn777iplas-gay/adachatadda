@@ -8,7 +8,7 @@ import {
   ButtonStyle,
   StringSelectMenuBuilder
 } from "discord.js";
-import mysql from 'mysql2/promise';
+import mysql from "mysql2/promise";
 import express from "express";
 import cors from "cors";
 
@@ -36,11 +36,23 @@ const PRODUCT = {
   desc: "Доступ к скрипту"
 };
 
-// === Подключение PostgreSQL ===
+// === Подключение MySQL ===
 const pool = mysql.createPool(DATABASE_URL);
-  connectionString: DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
-});
+
+// Обёртка, чтобы pool.query выглядел как у pg: { rowCount, rows, insertId }
+const rawQuery = pool.query.bind(pool);
+pool.query = async (sql, params) => {
+  const [rowsOrResult] = await rawQuery(sql, params);
+  if (Array.isArray(rowsOrResult)) {
+    return { rowCount: rowsOrResult.length, rows: rowsOrResult };
+  } else {
+    return {
+      rowCount: rowsOrResult.affectedRows || 0,
+      rows: [],
+      insertId: rowsOrResult.insertId
+    };
+  }
+};
 
 // === Discord клиент ===
 const client = new Client({
@@ -127,7 +139,10 @@ app.get("/check/:token", async (req, res) => {
   const acceptLang = req.headers["accept-language"] || "—";
   try {
     const token = req.params.token;
-    const result = await pool.query("SELECT 1 FROM my_table WHERE token=$1", [token]);
+    const result = await pool.query(
+      "SELECT 1 FROM my_table WHERE token = ?",
+      [token]
+    );
     const valid = result.rowCount > 0;
     res.json({ valid });
 
@@ -228,7 +243,10 @@ app.post("/run", async (req, res) => {
   try {
     const { token } = req.body; // сюда передают HWID
     if (!token) return res.status(400).send("// Токен (HWID) не указан");
-    const result = await pool.query("SELECT 1 FROM my_table WHERE token=$1", [token]);
+    const result = await pool.query(
+      "SELECT 1 FROM my_table WHERE token = ?",
+      [token]
+    );
     const valid = result.rowCount > 0;
     if (!valid) return res.status(403).send("// HWID не найден / доступ не активен");
 
@@ -263,76 +281,69 @@ async function sendLog(title, description, color = "#2f3136") {
   }
 }
 
-// === Инициализация базы ===
+// === Инициализация базы (MySQL) ===
 async function initDB() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS my_table (
-      id SERIAL PRIMARY KEY,
-      token TEXT UNIQUE NOT NULL,      -- здесь храним HWID
-      expires_at TIMESTAMP,
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      token TEXT NOT NULL UNIQUE,
+      expires_at TIMESTAMP NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
+    )
   `);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS promos (
-      id SERIAL PRIMARY KEY,
+      id INT AUTO_INCREMENT PRIMARY KEY,
       user_id TEXT NOT NULL,
-      discount INTEGER NOT NULL,
+      discount INT NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
+    )
   `);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS promo_cooldowns (
       user_id TEXT PRIMARY KEY,
       last_spin_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
+    )
   `);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS orders (
-      id SERIAL PRIMARY KEY,
+      id INT AUTO_INCREMENT PRIMARY KEY,
       user_id TEXT NOT NULL,
       product TEXT NOT NULL,
-      base_price INTEGER NOT NULL,
-      discount INTEGER NOT NULL DEFAULT 0,
-      final_price INTEGER NOT NULL,
-      promo_id INTEGER,
-      expires_at TIMESTAMP,            -- срок действия доступа
+      base_price INT NOT NULL,
+      discount INT NOT NULL DEFAULT 0,
+      final_price INT NOT NULL,
+      promo_id INT NULL,
+      expires_at TIMESTAMP NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
+    )
   `);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS hwids (
-      id SERIAL PRIMARY KEY,
-      user_id TEXT NOT NULL,
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id TEXT NOT NULL UNIQUE,
       hwid TEXT NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
+    )
   `);
 
-  // один HWID на пользователя
-  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS hwids_user_unique ON hwids(user_id);`);
-  // (для истории) чтобы один и тот же HWID не добавляли в my_table дважды
-  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS my_table_token_unique ON my_table(token);`);
-
-  // баланс виртуальной валюты
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_balances (
       user_id TEXT PRIMARY KEY,
-      balance INTEGER NOT NULL DEFAULT 0
-    );
+      balance INT NOT NULL DEFAULT 0
+    )
   `);
 
-  // роли, полученные из кейсов (с указанием владельца)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS case_roles (
       role_id TEXT PRIMARY KEY,
       owner_id TEXT NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
+    )
   `);
 
   console.log("✅ Таблицы проверены");
@@ -341,12 +352,22 @@ async function initDB() {
 // === Очистка просроченных HWID-доступов ===
 async function removeExpiredTokens() {
   const now = new Date();
-  const res = await pool.query("DELETE FROM my_table WHERE expires_at <= $1 RETURNING token", [
-    now
-  ]);
+
+  // сначала заберём токены, которые истекли
+  const res = await pool.query(
+    "SELECT token FROM my_table WHERE expires_at IS NOT NULL AND expires_at <= ?",
+    [now]
+  );
+
   for (const row of res.rows) {
     await sendLog("🕒 Доступ по HWID истёк", `\`${row.token}\``);
   }
+
+  // затем удалим их
+  await pool.query(
+    "DELETE FROM my_table WHERE expires_at IS NOT NULL AND expires_at <= ?",
+    [now]
+  );
 }
 
 // === Баланс монет ===
@@ -355,16 +376,19 @@ async function addCoins(userId, amount) {
   await pool.query(
     `
     INSERT INTO user_balances (user_id, balance)
-    VALUES ($1, $2)
-    ON CONFLICT (user_id) DO UPDATE
-      SET balance = user_balances.balance + EXCLUDED.balance
+    VALUES (?, ?)
+    ON DUPLICATE KEY UPDATE
+      balance = balance + VALUES(balance)
     `,
     [userId, amount]
   );
 }
 
 async function getBalance(userId) {
-  const res = await pool.query("SELECT balance FROM user_balances WHERE user_id=$1", [userId]);
+  const res = await pool.query(
+    "SELECT balance FROM user_balances WHERE user_id = ?",
+    [userId]
+  );
   return res.rowCount ? res.rows[0].balance : 0;
 }
 
@@ -372,9 +396,9 @@ async function setBalance(userId, amount) {
   await pool.query(
     `
     INSERT INTO user_balances (user_id, balance)
-    VALUES ($1, $2)
-    ON CONFLICT (user_id) DO UPDATE
-      SET balance = EXCLUDED.balance
+    VALUES (?, ?)
+    ON DUPLICATE KEY UPDATE
+      balance = VALUES(balance)
     `,
     [userId, amount]
   );
@@ -570,7 +594,7 @@ client.on("messageCreate", async (message) => {
       if (!targetUser || !amountRaw) {
         await message.reply(
           "⚙️ Формат: `!перевод @пользователь <кол-во>`\n" +
-          "Пример: `!перевод @User 50`"
+            "Пример: `!перевод @User 50`"
         );
         return;
       }
@@ -603,7 +627,7 @@ client.on("messageCreate", async (message) => {
 
       await message.reply(
         `💸 Ты перевёл **${amount}** монет пользователю <@${targetUser.id}>.\n` +
-        `Твой новый баланс: **${newSenderBalance}** монет.`
+          `Твой новый баланс: **${newSenderBalance}** монет.`
       );
 
       // попробуем уведомить получателя в ЛС
@@ -636,7 +660,7 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-        // === !кейс [кол-во] — открыть один или несколько кейсов за монеты ===
+    // === !кейс [кол-во] — открыть один или несколько кейсов за монеты ===
     if (cmd === "!кейс") {
       const userId = message.author.id;
       const bal = await getBalance(userId);
@@ -694,10 +718,10 @@ client.on("messageCreate", async (message) => {
           await addCoins(userId, reward.amount);
         } else if (reward.type === "promo") {
           promoDiscounts.push(reward.discount);
-          await pool.query("INSERT INTO promos (user_id, discount) VALUES ($1, $2)", [
-            userId,
-            reward.discount
-          ]);
+          await pool.query(
+            "INSERT INTO promos (user_id, discount) VALUES (?, ?)",
+            [userId, reward.discount]
+          );
         } else if (reward.type === "custom_role") {
           customRoleWins++;
           if (guild && member) {
@@ -728,10 +752,11 @@ client.on("messageCreate", async (message) => {
       const newBal = await getBalance(userId);
 
       // собираем красивый текст
-      let desc = `Ты открыл **${opened}** кейсов.\n` +
-                 `Потрачено: **${totalCost}** монет.\n` +
-                 `Текущий баланс: **${newBal}** монет.\n\n` +
-                 `📊 Результаты:\n`;
+      let desc =
+        `Ты открыл **${opened}** кейсов.\n` +
+        `Потрачено: **${totalCost}** монет.\n` +
+        `Текущий баланс: **${newBal}** монет.\n\n` +
+        `📊 Результаты:\n`;
 
       if (nothingCount > 0) {
         desc += `• Пустых кейсов: **${nothingCount}**\n`;
@@ -787,34 +812,40 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // === !промо — рулетка с кулдауном 24ч
+    // === !промо — рулетка с кулдауном 24ч (MySQL-версия кулдауна) ===
     if (cmd === "!промо") {
       const userId = message.author.id;
 
-      const gate = await pool.query(
-        `
-        INSERT INTO promo_cooldowns (user_id, last_spin_at)
-        VALUES ($1, NOW())
-        ON CONFLICT (user_id) DO UPDATE
-          SET last_spin_at = EXCLUDED.last_spin_at
-        WHERE promo_cooldowns.last_spin_at <= NOW() - INTERVAL '24 hours'
-        `,
+      // проверяем кулдаун
+      const lastRes = await pool.query(
+        "SELECT last_spin_at FROM promo_cooldowns WHERE user_id = ?",
         [userId]
       );
 
-      if (gate.rowCount === 0) {
-        const last = await pool.query(
-          `SELECT last_spin_at FROM promo_cooldowns WHERE user_id=$1`,
-          [userId]
-        );
-        const lastTime = new Date(last.rows[0].last_spin_at).getTime();
-        const remainMs = Math.max(0, 24 * 60 * 60 * 1000 - (Date.now() - lastTime));
-        const remainHours = (remainMs / (1000 * 60 * 60)).toFixed(1);
-        await message.reply(
-          `⏰ Ты уже крутил колесо недавно! Попробуй снова через **${remainHours} ч.**`
-        );
-        return;
+      const dayMs = 24 * 60 * 60 * 1000;
+      if (lastRes.rowCount > 0) {
+        const lastTime = new Date(lastRes.rows[0].last_spin_at).getTime();
+        const since = Date.now() - lastTime;
+        if (since < dayMs) {
+          const remainMs = dayMs - since;
+          const remainHours = (remainMs / (1000 * 60 * 60)).toFixed(1);
+          await message.reply(
+            `⏰ Ты уже крутил колесо недавно! Попробуй снова через **${remainHours} ч.**`
+          );
+          return;
+        }
       }
+
+      // обновляем/создаём запись кулдауна
+      await pool.query(
+        `
+        INSERT INTO promo_cooldowns (user_id, last_spin_at)
+        VALUES (?, NOW())
+        ON DUPLICATE KEY UPDATE
+          last_spin_at = VALUES(last_spin_at)
+        `,
+        [userId]
+      );
 
       const segments = ["—", "5%", "—", "10%", "—", "15%", "—", "20%", "—", "30%", "—", "60%"];
       const isWin = Math.random() < 0.1;
@@ -857,7 +888,7 @@ client.on("messageCreate", async (message) => {
       }
 
       const discount = parseInt(targetLabel, 10);
-      await pool.query("INSERT INTO promos (user_id, discount) VALUES ($1, $2)", [
+      await pool.query("INSERT INTO promos (user_id, discount) VALUES (?, ?)", [
         userId,
         discount
       ]);
@@ -882,12 +913,12 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // === !купить — выбор/сжигание промокода, без ввода товара
+    // === !купить — выбор/сжигание промокода, без ввода товара ===
     if (cmd === "!купить") {
       const userId = message.author.id;
 
       const promosRes = await pool.query(
-        "SELECT id, discount FROM promos WHERE user_id=$1 ORDER BY id ASC",
+        "SELECT id, discount FROM promos WHERE user_id = ? ORDER BY id ASC",
         [userId]
       );
       const promos = promosRes.rows;
@@ -908,7 +939,7 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // === !add_hwid <HWID> — пользователь добавляет СВОЙ единственный HWID
+    // === !add_hwid <HWID> — пользователь добавляет СВОЙ единственный HWID ===
     if (cmd === "!add_hwid") {
       const userId = message.author.id;
       const hwid = (args.join(" ") || "").trim();
@@ -923,7 +954,10 @@ client.on("messageCreate", async (message) => {
       }
 
       // 1) уже есть HWID у пользователя?
-      const hasHwid = await pool.query("SELECT 1 FROM hwids WHERE user_id=$1 LIMIT 1", [userId]);
+      const hasHwid = await pool.query(
+        "SELECT 1 FROM hwids WHERE user_id = ? LIMIT 1",
+        [userId]
+      );
       if (hasHwid.rowCount > 0) {
         await message.reply("🔒 У тебя уже привязан HWID. Второй добавить нельзя.");
         return;
@@ -933,7 +967,7 @@ client.on("messageCreate", async (message) => {
       const activeOrder = await pool.query(
         `SELECT expires_at
          FROM orders
-         WHERE user_id=$1
+         WHERE user_id = ?
          ORDER BY expires_at DESC
          LIMIT 1`,
         [userId]
@@ -952,10 +986,10 @@ client.on("messageCreate", async (message) => {
 
       // 3) Попробуем завести HWID как access-токен (в my_table). Он должен быть уникален.
       try {
-        await pool.query("INSERT INTO my_table (token, expires_at) VALUES ($1, $2)", [
-          hwid,
-          orderExpiresAt
-        ]);
+        await pool.query(
+          "INSERT INTO my_table (token, expires_at) VALUES (?, ?)",
+          [hwid, orderExpiresAt]
+        );
       } catch (e) {
         // нарушена уникальность -> HWID уже используется (кем-то)
         await message.reply("⚠️ Этот HWID уже занят в системе. Укажи другой HWID.");
@@ -964,12 +998,12 @@ client.on("messageCreate", async (message) => {
 
       // 4) Сохраним привязку пользователя -> HWID (ровно один)
       const ins = await pool.query(
-        "INSERT INTO hwids (user_id, hwid) VALUES ($1, $2) ON CONFLICT (user_id) DO NOTHING",
+        "INSERT IGNORE INTO hwids (user_id, hwid) VALUES (?, ?)",
         [userId, hwid]
       );
       if (ins.rowCount === 0) {
         // кто-то успел привязать в гонке — откатим вставку в my_table
-        await pool.query("DELETE FROM my_table WHERE token=$1", [hwid]);
+        await pool.query("DELETE FROM my_table WHERE token = ?", [hwid]);
         await message.reply("🔒 У тебя уже есть привязанный HWID.");
         return;
       }
@@ -988,17 +1022,17 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-       // === !профиль — доступ = есть ли привязанный HWID
+    // === !профиль — доступ = есть ли привязанный HWID
     if (cmd === "!профиль") {
       const userId = message.author.id;
 
       const promoRes = await pool.query(
-        "SELECT id, discount, created_at FROM promos WHERE user_id=$1 ORDER BY id ASC",
+        "SELECT id, discount, created_at FROM promos WHERE user_id = ? ORDER BY id ASC",
         [userId]
       );
 
       const hwidsRes = await pool.query(
-        "SELECT hwid, created_at FROM hwids WHERE user_id=$1 ORDER BY id ASC",
+        "SELECT hwid, created_at FROM hwids WHERE user_id = ? ORDER BY id ASC",
         [userId]
       );
 
@@ -1063,7 +1097,7 @@ client.on("messageCreate", async (message) => {
         promoList = text;
       }
 
-      // --- HWID-часть без изменений ---
+      // --- HWID-часть ---
       const hwidList = hwidsRes.rowCount
         ? hwidsRes.rows
             .map(
@@ -1108,7 +1142,7 @@ client.on("messageCreate", async (message) => {
 
       // 1) есть ли у пользователя HWID
       const hwidsRes = await pool.query(
-        "SELECT hwid FROM hwids WHERE user_id=$1 ORDER BY id ASC",
+        "SELECT hwid FROM hwids WHERE user_id = ? ORDER BY id ASC",
         [userId]
       );
 
@@ -1125,7 +1159,7 @@ client.on("messageCreate", async (message) => {
 
       // 2) ищем срок действия в my_table
       const tokenRes = await pool.query(
-        "SELECT expires_at FROM my_table WHERE token=$1",
+        "SELECT expires_at FROM my_table WHERE token = ?",
         [hwid]
       );
 
@@ -1183,14 +1217,14 @@ client.on("messageCreate", async (message) => {
       }
 
       const promo = await pool.query(
-        "SELECT id, discount FROM promos WHERE id=$1 AND user_id=$2",
+        "SELECT id, discount FROM promos WHERE id = ? AND user_id = ?",
         [promoId, message.author.id]
       );
       if (promo.rowCount === 0) {
         return message.reply("⚠️ У тебя нет промокода с таким ID.");
       }
 
-      await pool.query("UPDATE promos SET user_id=$1 WHERE id=$2", [
+      await pool.query("UPDATE promos SET user_id = ? WHERE id = ?", [
         targetUser.id,
         promoId
       ]);
@@ -1253,8 +1287,7 @@ client.on("messageCreate", async (message) => {
         const member = await guild.members.fetch(message.author.id);
         await member.roles.add(role);
 
-        // сессию тратим
-                // тратим один "заряд" на создание роли
+        // тратим один "заряд" на создание роли
         if (session.count && session.count > 1) {
           customRoleSessions.set(key, {
             guildId: session.guildId,
@@ -1268,9 +1301,9 @@ client.on("messageCreate", async (message) => {
         await pool.query(
           `
           INSERT INTO case_roles (role_id, owner_id)
-          VALUES ($1, $2)
-          ON CONFLICT (role_id) DO UPDATE
-            SET owner_id = EXCLUDED.owner_id
+          VALUES (?, ?)
+          ON DUPLICATE KEY UPDATE
+            owner_id = VALUES(owner_id)
           `,
           [role.id, message.author.id]
         );
@@ -1316,7 +1349,7 @@ client.on("messageCreate", async (message) => {
 
       // проверяем, что это именно кейс-роль и что отправитель — её владелец
       const res = await pool.query(
-        "SELECT owner_id FROM case_roles WHERE role_id=$1",
+        "SELECT owner_id FROM case_roles WHERE role_id = ?",
         [role.id]
       );
 
@@ -1341,7 +1374,7 @@ client.on("messageCreate", async (message) => {
         }
         await toMember.roles.add(role);
 
-        await pool.query("UPDATE case_roles SET owner_id=$1 WHERE role_id=$2", [
+        await pool.query("UPDATE case_roles SET owner_id = ? WHERE role_id = ?", [
           targetUser.id,
           role.id
         ]);
@@ -1364,13 +1397,13 @@ client.on("messageCreate", async (message) => {
     if (cmd === "!стата") {
       // активные HWID (по сроку)
       const activeRes = await pool.query(
-        "SELECT COUNT(*) AS cnt FROM my_table WHERE expires_at IS NULL OR expires_at > NOW();"
+        "SELECT COUNT(*) AS cnt FROM my_table WHERE expires_at IS NULL OR expires_at > NOW()"
       );
       const activeCount = parseInt(activeRes.rows[0].cnt, 10) || 0;
 
       // все заказы
       const ordersRes = await pool.query(
-        "SELECT COUNT(*) AS cnt, COALESCE(SUM(final_price),0) AS sum FROM orders;"
+        "SELECT COUNT(*) AS cnt, COALESCE(SUM(final_price),0) AS sum FROM orders"
       );
       const totalOrders = parseInt(ordersRes.rows[0].cnt, 10) || 0;
       const totalRevenue = parseInt(ordersRes.rows[0].sum, 10) || 0;
@@ -1380,14 +1413,14 @@ client.on("messageCreate", async (message) => {
         `
         SELECT COUNT(*) AS cnt, COALESCE(SUM(final_price),0) AS sum
         FROM orders
-        WHERE created_at >= NOW() - INTERVAL '30 days';
+        WHERE created_at >= NOW() - INTERVAL 30 DAY
         `
       );
       const recentOrders = parseInt(last30Res.rows[0].cnt, 10) || 0;
       const recentRevenue = parseInt(last30Res.rows[0].sum, 10) || 0;
 
       // количество выданных промо
-      const promoRes = await pool.query("SELECT COUNT(*) AS cnt FROM promos;");
+      const promoRes = await pool.query("SELECT COUNT(*) AS cnt FROM promos");
       const promoCount = parseInt(promoRes.rows[0].cnt, 10) || 0;
 
       const embed = new EmbedBuilder()
@@ -1440,7 +1473,7 @@ client.on("messageCreate", async (message) => {
         );
       }
 
-      await pool.query("INSERT INTO promos (user_id, discount) VALUES ($1, $2)", [
+      await pool.query("INSERT INTO promos (user_id, discount) VALUES (?, ?)", [
         target.id,
         discount
       ]);
@@ -1475,10 +1508,10 @@ client.on("messageCreate", async (message) => {
       expiresAt.setMonth(expiresAt.getMonth() + 1);
 
       try {
-        await pool.query("INSERT INTO my_table(token, expires_at) VALUES($1,$2)", [
-          hwid,
-          expiresAt
-        ]);
+        await pool.query(
+          "INSERT INTO my_table (token, expires_at) VALUES (?, ?)",
+          [hwid, expiresAt]
+        );
         await message.reply(
           `✅ HWID \`${hwid}\` добавлен. Истекает: ${expiresAt.toLocaleString("ru-RU")}`
         );
@@ -1514,8 +1547,8 @@ client.on("messageCreate", async (message) => {
     if (cmd === "!удалить") {
       const hwid = args[0];
       if (!hwid) return message.reply("⚙️ Формат: `!удалить <HWID>`");
-      await pool.query("DELETE FROM my_table WHERE token=$1", [hwid]);
-      await pool.query("DELETE FROM hwids WHERE hwid=$1", [hwid]);
+      await pool.query("DELETE FROM my_table WHERE token = ?", [hwid]);
+      await pool.query("DELETE FROM hwids WHERE hwid = ?", [hwid]);
       await message.reply("🗑️ Удалено (если было).");
       return;
     }
@@ -1630,7 +1663,7 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     const promosRes = await pool.query(
-      "SELECT id, discount FROM promos WHERE user_id=$1 ORDER BY id ASC",
+      "SELECT id, discount FROM promos WHERE user_id = ? ORDER BY id ASC",
       [session.userId]
     );
     const promos = promosRes.rows;
@@ -1655,22 +1688,29 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        // Сжигаем промокод сразу
+        // Сжигаем промокод сразу (MySQL: сначала SELECT, потом DELETE)
         const id = parseInt(value.replace("promo_", ""), 10);
-        const del = await pool.query(
-          "DELETE FROM promos WHERE id=$1 AND user_id=$2 RETURNING discount;",
+
+        const promoRes = await pool.query(
+          "SELECT discount FROM promos WHERE id = ? AND user_id = ?",
           [id, session.userId]
         );
-        if (del.rowCount === 0) {
+        if (promoRes.rowCount === 0) {
           return interaction.reply({
             content: "⚠️ Этот промокод недоступен или уже использован.",
             ephemeral: true
           });
         }
+
+        await pool.query(
+          "DELETE FROM promos WHERE id = ? AND user_id = ?",
+          [id, session.userId]
+        );
+
         session.promoId = id;
         session.promoDiscount = Math.min(
           100,
-          Math.max(0, parseInt(del.rows[0].discount, 10) || 0)
+          Math.max(0, parseInt(promoRes.rows[0].discount, 10) || 0)
         );
         session.promoLocked = true;
 
@@ -1704,13 +1744,15 @@ client.on("interactionCreate", async (interaction) => {
           await addCoins(session.userId, coinsBonus);
         }
 
-        // Создаём заказ (без токена; токен = HWID добавит сам пользователь)
+        // Создаём заказ (MySQL: без RETURNING, берём insertId)
         const ord = await pool.query(
-          `INSERT INTO orders (user_id, product, base_price, discount, final_price, promo_id, expires_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id;`,
+          `
+          INSERT INTO orders (user_id, product, base_price, discount, final_price, promo_id, expires_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          `,
           [session.userId, PRODUCT.name, base, discount, final, session.promoId, expiresAt]
         );
-        const orderId = ord.rows[0].id;
+        const orderId = ord.insertId;
 
         await interaction.update({
           embeds: [
