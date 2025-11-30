@@ -280,36 +280,40 @@ async function sendLog(title, description, color = "#2f3136") {
 
 // === Инициализация базы (MySQL) ===
 async function initDB() {
+  // Основная таблица доступов по HWID
   await pool.query(`
     CREATE TABLE IF NOT EXISTS my_table (
       id INT AUTO_INCREMENT PRIMARY KEY,
-      token TEXT NOT NULL UNIQUE,
+      token VARCHAR(191) NOT NULL UNIQUE, -- HWID, индексируемое поле
       expires_at TIMESTAMP NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
 
+  // Промокоды
   await pool.query(`
     CREATE TABLE IF NOT EXISTS promos (
       id INT AUTO_INCREMENT PRIMARY KEY,
-      user_id TEXT NOT NULL,
+      user_id VARCHAR(191) NOT NULL,
       discount INT NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
 
+  // Кулдауны рулетки (1 запись на пользователя)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS promo_cooldowns (
-      user_id TEXT PRIMARY KEY,
+      user_id VARCHAR(191) PRIMARY KEY,
       last_spin_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
   `);
 
+  // Заказы
   await pool.query(`
     CREATE TABLE IF NOT EXISTS orders (
       id INT AUTO_INCREMENT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      product TEXT NOT NULL,
+      user_id VARCHAR(191) NOT NULL,
+      product VARCHAR(191) NOT NULL,
       base_price INT NOT NULL,
       discount INT NOT NULL DEFAULT 0,
       final_price INT NOT NULL,
@@ -319,26 +323,29 @@ async function initDB() {
     )
   `);
 
+  // Привязка пользователя к HWID
   await pool.query(`
     CREATE TABLE IF NOT EXISTS hwids (
       id INT AUTO_INCREMENT PRIMARY KEY,
-      user_id TEXT NOT NULL UNIQUE,
-      hwid TEXT NOT NULL,
+      user_id VARCHAR(191) NOT NULL UNIQUE, -- 1 HWID на юзера
+      hwid VARCHAR(191) NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
 
+  // Баланс монет (1 запись на юзера)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_balances (
-      user_id TEXT PRIMARY KEY,
+      user_id VARCHAR(191) PRIMARY KEY,
       balance INT NOT NULL DEFAULT 0
     )
   `);
 
+  // Кейсовые роли (по role_id)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS case_roles (
-      role_id TEXT PRIMARY KEY,
-      owner_id TEXT NOT NULL,
+      role_id VARCHAR(191) PRIMARY KEY,
+      owner_id VARCHAR(191) NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
