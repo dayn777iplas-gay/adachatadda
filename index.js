@@ -1,4 +1,4 @@
-import {
+import {1
   Client,
   GatewayIntentBits,
   EmbedBuilder,
